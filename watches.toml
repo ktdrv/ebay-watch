@@ -1,0 +1,41 @@
+# eBay watches. Re-read on every poll, so `task deploy -- ebay-watch` is all
+# an edit needs. Each poll is one API call per watch, and the default Browse
+# API quota is 5,000 calls a day: at 10 minutes that's room for ~30 watches.
+
+interval_minutes = 10
+# Shipping is quoted to this ZIP. Without it eBay omits calculated shipping.
+zip = "10001"
+
+# A new listing alerts when EITHER rule fires. Leave one out to disable it.
+#
+#   name          shown in alerts. Price history is keyed by it, so rename the
+#                 watch when you change its query, or the old history skews z.
+#   query         eBay keyword search
+#   max_price     alert at or under this delivered price (item + cheapest shipping)
+#   max_z         alert at or under this robust z-score versus listings seen in
+#                 the last history_days (default 30). -2 is roughly "cheaper
+#                 than 98% of comparable listings". Needs min_samples (default
+#                 20) priced listings first, so it is silent for a watch's
+#                 first few polls on a rare item.
+#   min_price     ignore anything under this. Drops "box only", parts and
+#                 accessory listings, which would otherwise be the lowest
+#                 z-scores of all.
+#   exclude       ignore titles containing any of these (case-insensitive)
+#   condition_ids e.g. [1000] new, [3000] used, [1000, 1500, 2500, 3000] new
+#                 through used. Full list: https://developer.ebay.com/api-docs/sell/static/metadata/condition-id-values.html
+#   category_ids  restrict to eBay categories (the number in a category URL)
+#   buying_options default ["FIXED_PRICE"], which includes Best Offer
+#                 listings. Adding "AUCTION" compares current bids, which are
+#                 near-zero on fresh auctions and will alert constantly.
+#
+# The first poll of a new watch records a baseline and alerts on nothing; you
+# get one "Watching ..." push to confirm it is working.
+
+# Example to prove the pipeline end to end. Replace with what you want.
+[[watch]]
+name = "Steam Deck OLED"
+query = "steam deck oled"
+max_price = 380
+max_z = -2.0
+min_price = 150
+exclude = ["broken", "for parts", "parts only", "case only", "box only", "read description", "cracked"]
