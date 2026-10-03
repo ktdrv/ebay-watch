@@ -91,9 +91,25 @@ class CheckTest(unittest.TestCase):
         self.assertEqual(deals, [])
 
 
+    def test_variation_listings_are_ignored(self) -> None:
+        group = item("g", 200)
+        group["itemGroupHref"] = "https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group?item_group_id=1"
+        deals, _ = watch.check(self.db, self.w, [group], 2000.0)
+        self.assertEqual(deals, [])
+
+    def test_new_and_poorly_rated_sellers_are_ignored(self) -> None:
+        w = {**self.w, "min_seller_feedback": 10, "min_seller_percent": 97}
+        fresh, shady, good = item("fresh", 200), item("shady", 200), item("good", 200)
+        fresh["seller"] = {"feedbackScore": 2, "feedbackPercentage": "100.0"}
+        shady["seller"] = {"feedbackScore": 900, "feedbackPercentage": "91.2"}
+        good["seller"] = {"feedbackScore": 900, "feedbackPercentage": "99.6"}
+        deals, _ = watch.check(self.db, w, [fresh, shady, good], 2000.0)
+        self.assertEqual([(d["url"], d["seller"]) for d in deals], [("https://www.ebay.com/itm/good", "seller 900 (99.6%)")])
+
+
 class PushDealsTest(unittest.TestCase):
     def test_caps_pushes_and_summarises_the_rest(self) -> None:
-        deals = [{"title": "t", "price": float(p), "shipping": 0.0, "z": -3.0, "median": 400.0, "url": "u", "image": None, "condition": "Used", "variations": False} for p in range(200, 208)]
+        deals = [{"title": "t", "price": float(p), "shipping": 0.0, "z": -3.0, "median": 400.0, "url": "u", "image": None, "condition": "Used", "seller": "seller 500 (100.0%)"} for p in range(200, 208)]
         with mock.patch.object(watch, "push") as push:
             watch.push_deals({"name": "deck", "query": "steam deck"}, deals)
         titles = [c.args[0] for c in push.call_args_list]

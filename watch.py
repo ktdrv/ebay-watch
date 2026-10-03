@@ -19,9 +19,9 @@ import urllib.request
 from pathlib import Path
 
 EBAY = "https://api.ebay.com"
-# Alert after this many consecutive failed polls (an hour at the default
-# interval), so one eBay hiccup doesn't page the phone.
-FAIL_ALERT_AFTER = 6
+# Alert once every poll has failed for this long, so an eBay hiccup doesn't
+# page the phone. Time rather than a poll count, so the interval can change.
+FAIL_ALERT_AFTER = 3600
 # More deals than this in one poll for one watch gets the cheapest few plus a
 # summary, instead of a wall of pushes.
 MAX_PUSHES = 5
@@ -113,6 +113,16 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float) ->
         title = item.get("title", "")
         if any(w in title.lower() for w in exclude):
             continue
+        # A multi-variation listing ("6700 XT / 6800 XT") can surface in a
+        # search priced at whichever variation is cheapest, which is a false
+        # deal for the model you searched.
+        if "itemGroupHref" in item:
+            continue
+        # Too-good prices from new or poorly rated sellers are the classic
+        # scam, and exactly what a low z-score flags.
+        seller = item.get("seller", {})
+        if int(seller.get("feedbackScore", 0)) < watch.get("min_seller_feedback", 0) or float(seller.get("feedbackPercentage", 0)) < watch.get("min_seller_percent", 0):
+            continue
         price, shipping = delivered(item)
         if price < watch.get("min_price", 0):
             continue
@@ -130,7 +140,7 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float) ->
         cheap = price <= watch.get("max_price", 0)
         outlier = z is not None and z <= watch.get("max_z", float("-inf"))
         if cheap or outlier:
-            deals.append({"title": title, "price": price, "shipping": shipping, "z": z, "median": median, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "variations": "itemGroupHref" in item})
+            deals.append({"title": title, "price": price, "shipping": shipping, "z": z, "median": median, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
     baseline = None
     if first_poll:
         recorded = [p for (p,) in db.execute("SELECT price FROM listing WHERE watch = ? AND shipping_known", (name,))]
@@ -154,9 +164,7 @@ def push_deals(watch: dict, deals: list[dict]) -> None:
     for d in deals[:MAX_PUSHES]:
         ship = "shipping not quoted" if d["shipping"] is None else ("free shipping" if d["shipping"] == 0 else f"${d['price'] - d['shipping']:.2f} + ${d['shipping']:.2f} shipping")
         stats = f"z {d['z']:.1f}, median ${d['median']:.2f}" if d["z"] is not None else (f"median ${d['median']:.2f}" if d["median"] else "")
-        lines = [d["title"], " · ".join(x for x in (ship, d["condition"], stats) if x)]
-        if d["variations"]:
-            lines.append("Has variations: this may be the cheapest option's price.")
+        lines = [d["title"], " · ".join(x for x in (ship, d["condition"], d["seller"], stats) if x)]
         push(f"{watch['name']}: ${d['price']:.2f} delivered", "\n".join(lines), click=d["url"], image=d["image"], priority=4, tags=["moneybag"])
     if len(deals) > MAX_PUSHES:
         rest = deals[MAX_PUSHES:]
@@ -196,7 +204,8 @@ def main() -> None:
         "CREATE TABLE IF NOT EXISTS listing (watch TEXT, item_id TEXT, price REAL, shipping_known INTEGER,"
         " first_seen REAL, last_seen REAL, PRIMARY KEY (watch, item_id))"
     )
-    failures = 0
+    failing_since = None
+    alerted = False
     while True:
         interval = 10
         try:
@@ -207,10 +216,14 @@ def main() -> None:
         except Exception as e:
             log.exception("poll failed")
             errors = [str(e)]
-        failures = failures + 1 if errors else 0
-        if failures == FAIL_ALERT_AFTER:
+        if not errors:
+            failing_since, alerted = None, False
+        elif failing_since is None:
+            failing_since = time.time()
+        elif not alerted and time.time() - failing_since >= FAIL_ALERT_AFTER:
             try:
-                push("eBay watcher is failing", f"{failures} polls in a row. Last errors:\n" + "\n".join(errors), priority=4, tags=["warning"])
+                push("eBay watcher is failing", f"Every poll for {(time.time() - failing_since) / 60:.0f} minutes. Last errors:\n" + "\n".join(errors), priority=4, tags=["warning"])
+                alerted = True
             except Exception:
                 log.exception("could not push the failure alert")
         time.sleep(interval * 60)

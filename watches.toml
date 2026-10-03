@@ -1,8 +1,11 @@
 # eBay watches. Re-read on every poll, so `task deploy -- ebay-watch` is all
 # an edit needs. Each poll is one API call per watch, and the default Browse
-# API quota is 5,000 calls a day: at 10 minutes that's room for ~30 watches.
+# API quota is 5,000 calls a day: watches x 1440 / interval_minutes must stay
+# under it. At 1 minute that is 3 watches (4,320 calls); a 4th needs
+# interval_minutes = 2 or a quota raise via eBay's Application Growth Check.
+# Past the quota, every poll fails until midnight Pacific.
 
-interval_minutes = 10
+interval_minutes = 1
 # Shipping is quoted to this ZIP. Without it eBay omits calculated shipping.
 zip = "10001"
 
@@ -14,13 +17,18 @@ zip = "10001"
 #   max_price     alert at or under this delivered price (item + cheapest shipping)
 #   max_z         alert at or under this robust z-score versus listings seen in
 #                 the last history_days (default 30). -2 is roughly "cheaper
-#                 than 98% of comparable listings". Needs min_samples (default
+#                 than 98% of comparable listings", -2.5 than 99.4%. At ~100
+#                 new listings a day per model, that's ~2 vs ~0.6 alerts a day. Needs min_samples (default
 #                 20) priced listings first, so it is silent for a watch's
 #                 first few polls on a rare item.
 #   min_price     ignore anything under this. Drops "box only", parts and
 #                 accessory listings, which would otherwise be the lowest
 #                 z-scores of all.
 #   exclude       ignore titles containing any of these (case-insensitive)
+#   min_seller_feedback, min_seller_percent
+#                 ignore sellers below this feedback count / positive %.
+#                 Cuts scams, at the cost of the occasional real deal from a
+#                 private seller with a fresh account.
 #   condition_ids e.g. [1000] new, [3000] used, [1000, 1500, 2500, 3000] new
 #                 through used. Full list: https://developer.ebay.com/api-docs/sell/static/metadata/condition-id-values.html
 #   category_ids  restrict to eBay categories (the number in a category URL)
@@ -47,7 +55,9 @@ name = "RX 6700 XT"
 query = "rx 6700 xt"
 category_ids = [27386]
 max_price = 180
-max_z = -2.0
+max_z = -2.5
+min_seller_feedback = 10
+min_seller_percent = 97
 min_price = 100
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read description", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
 
@@ -56,7 +66,9 @@ name = "RX 6800"
 query = "rx 6800"
 category_ids = [27386]
 max_price = 240
-max_z = -2.0
+max_z = -2.5
+min_seller_feedback = 10
+min_seller_percent = 97
 min_price = 140
 # The query also matches 6800 XT listings, which belong to the next watch.
 exclude = ["6800 xt", "6800xt", "for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read description", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
@@ -66,6 +78,8 @@ name = "RX 6800 XT"
 query = "rx 6800 xt"
 category_ids = [27386]
 max_price = 290
-max_z = -2.0
+max_z = -2.5
+min_seller_feedback = 10
+min_seller_percent = 97
 min_price = 170
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read description", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
