@@ -1,8 +1,9 @@
 """Poll eBay for new listings and push the good deals to ntfy.
 
 A new listing is a deal when its delivered price (item + cheapest shipping to
-the configured ZIP) is at or under the watch's max_price, or when its robust
-z-score against recently seen listings for the same watch is at or under max_z.
+the configured ZIP) is well under both the recent median and where the recent
+price trend puts today's price. The trend is what keeps a falling market from
+making every new listing look like a bargain.
 Standard library only, so it runs on a stock python image with nothing to build.
 """
 
@@ -14,8 +15,10 @@ import sqlite3
 import statistics
 import time
 import tomllib
+import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime
 from pathlib import Path
 
 EBAY = "https://api.ebay.com"
@@ -25,6 +28,23 @@ FAIL_ALERT_AFTER = 3600
 # More deals than this in one poll for one watch gets the cheapest few plus a
 # summary, instead of a wall of pushes.
 MAX_PUSHES = 5
+DAY = 86400
+# A new watch's first poll pages back through this many listings to seed its
+# history, so it can alert from day one instead of after a week of watching.
+SEED_LIMIT = 1000
+# listed_at is eBay's listing date. A new watch's history is seeded from
+# listings that are still up, and the older ones still up are the ones that
+# didn't sell, so they skew high. That reads as a falling market, which lowers
+# the trend's price for today and makes the trend test stricter: the bias
+# costs missed deals, not false alarms, and ages out of the window.
+#
+# seeded marks a watch as past its first poll. It is separate from listing so a
+# watch whose first poll recorded nothing (all filtered out) isn't treated as
+# new again, re-seeding at 5 API calls a minute.
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS listing (watch TEXT, item_id TEXT, price REAL, listed_at REAL, PRIMARY KEY (watch, item_id));
+CREATE TABLE IF NOT EXISTS seeded (watch TEXT PRIMARY KEY);
+"""
 
 log = logging.getLogger("ebay-watch")
 _token = {"value": "", "expires": 0.0}
@@ -50,13 +70,13 @@ def ebay_token() -> str:
     return _token["value"]
 
 
-def search(watch: dict, zip_code: str) -> list[dict]:
-    """The newest 200 listings matching the watch."""
+def search(watch: dict, zip_code: str, offset: int = 0) -> list[dict]:
+    """200 listings matching the watch, newest first, skipping `offset`."""
     filters = ["buyingOptions:{" + "|".join(watch.get("buying_options", ["FIXED_PRICE"])) + "}", "deliveryCountry:US"]
     if "condition_ids" in watch:
         filters.append("conditionIds:{" + "|".join(map(str, watch["condition_ids"])) + "}")
-    # No price filter on purpose: the z-score needs the whole distribution.
-    params = {"q": watch["query"], "sort": "newlyListed", "limit": 200, "filter": ",".join(filters)}
+    # No price filter on purpose: the statistics need the whole distribution.
+    params = {"q": watch["query"], "sort": "newlyListed", "limit": 200, "offset": offset, "filter": ",".join(filters)}
     if "category_ids" in watch:
         params["category_ids"] = ",".join(map(str, watch["category_ids"]))
     req = urllib.request.Request(
@@ -73,37 +93,72 @@ def search(watch: dict, zip_code: str) -> list[dict]:
         return json.load(resp).get("itemSummaries", [])
 
 
-def delivered(item: dict) -> tuple[float, float | None]:
-    """(item price + cheapest shipping, shipping). Shipping is None when eBay quoted none."""
-    price = float(item["price"]["value"])
+def delivered(item: dict) -> tuple[float, float] | None:
+    """(item price + cheapest shipping, shipping), or None when eBay quoted no
+    shipping (local pickup, freight), which leaves nothing comparable."""
     costs = [float(o["shippingCost"]["value"]) for o in item.get("shippingOptions", []) if "shippingCost" in o]
     if not costs:
-        return price, None
-    return price + min(costs), min(costs)
-
-
-def robust_z(x: float, sample: list[float]) -> float | None:
-    """z-score using median and MAD, so a few $1 "box only" or $5000 bundle
-    listings don't drag the baseline the way they would a mean and stdev."""
-    median = statistics.median(sample)
-    mad = statistics.median(abs(p - median) for p in sample)
-    if mad == 0:
         return None
-    return (x - median) / (1.4826 * mad)
+    return float(item["price"]["value"]) + min(costs), min(costs)
+
+
+def spread(xs: list[float]) -> float:
+    """MAD scaled to match a standard deviation. Unlike stdev, a few $1 "box
+    only" or $5000 bundle listings barely move it."""
+    m = statistics.median(xs)
+    return 1.4826 * statistics.median(abs(x - m) for x in xs)
+
+
+def listed_at(item: dict, default: float) -> float:
+    # A malformed date falls back like a missing one rather than raising,
+    # which would fail the whole poll every minute until the listing aged out.
+    try:
+        return datetime.fromisoformat(item["itemCreationDate"]).timestamp()
+    except (KeyError, TypeError, ValueError):
+        return default
+
+
+def market(history: list[tuple[float, float]], now: float, min_days: int) -> dict | None:
+    """Where asking prices sit and where they are heading, or None until the
+    history covers min_days separate days.
+
+    history is (listed_at, delivered price). The trend is a Theil-Sen line
+    through daily medians: the median of every pairwise slope, so one odd day
+    can't tilt it the way it would a least-squares fit. spread is the scatter
+    around that line, so a steep trend doesn't inflate it.
+    """
+    by_day: dict[int, list[float]] = {}
+    for t, p in history:
+        by_day.setdefault(int((now - t) // DAY), []).append(p)
+    if len(by_day) < min_days:
+        return None
+    # x is in days relative to now, so the line's intercept is today's expected price.
+    points = [(-(d + 0.5), statistics.median(ps)) for d, ps in by_day.items()]
+    slope = statistics.median((y2 - y1) / (x2 - x1) for i, (x1, y1) in enumerate(points) for x2, y2 in points[i + 1:])
+    expected = statistics.median(y - slope * x for x, y in points)
+    level = statistics.median(p for _, p in history)
+    residuals = [p - (expected + slope * (t - now) / DAY) for t, p in history]
+    # Floored at 2% of the price: when most listings share one price (a
+    # refurbisher's stock), the scatter is ~0 and any small undercut would
+    # look like a huge outlier.
+    return {"level": level, "expected": expected, "spread": max(spread(residuals), 0.02 * level), "per_week": slope * 7}
 
 
 def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float) -> tuple[list[dict], dict | None]:
     """Record this poll's listings, uncommitted, and return (deals among the new ones, baseline).
 
-    baseline is set only on a watch's first poll, which records everything
-    and alerts on nothing, since every listing would otherwise look new.
+    baseline is set only on a watch's first poll, which seeds the history with
+    what is already listed and alerts on nothing, since every listing would
+    otherwise look new.
     """
     name = watch["name"]
-    first_poll = db.execute("SELECT 1 FROM listing WHERE watch = ? LIMIT 1", (name,)).fetchone() is None
-    cutoff = now - watch.get("history_days", 30) * 86400
-    history = [p for (p,) in db.execute("SELECT price FROM listing WHERE watch = ? AND last_seen >= ? AND shipping_known", (name, cutoff))]
-    enough = len(history) >= watch.get("min_samples", 20)
-    median = statistics.median(history) if history else None
+    first_poll = db.execute("INSERT OR IGNORE INTO seeded VALUES (?)", (name,)).rowcount == 1
+    cutoff = now - watch.get("history_days", 14) * DAY
+    # A trend needs at least two days to have a slope.
+    min_days = max(2, watch.get("min_days", 7))
+    history = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ?", (name, cutoff)).fetchall()
+    m = market(history, now, min_days)
+    max_z = watch.get("max_z", -2.5)
     exclude = [w.lower() for w in watch.get("exclude", [])]
 
     deals = []
@@ -123,28 +178,27 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float) ->
         seller = item.get("seller", {})
         if int(seller.get("feedbackScore", 0)) < watch.get("min_seller_feedback", 0) or float(seller.get("feedbackPercentage", 0)) < watch.get("min_seller_percent", 0):
             continue
-        price, shipping = delivered(item)
-        if price < watch.get("min_price", 0):
+        d = delivered(item)
+        if d is None or d[0] < watch.get("min_price", 0):
             continue
-        is_new = db.execute("SELECT 1 FROM listing WHERE watch = ? AND item_id = ?", (name, item["itemId"])).fetchone() is None
-        db.execute(
-            "INSERT INTO listing (watch, item_id, price, shipping_known, first_seen, last_seen) VALUES (?, ?, ?, ?, ?, ?)"
-            " ON CONFLICT (watch, item_id) DO UPDATE SET price = excluded.price, shipping_known = excluded.shipping_known, last_seen = excluded.last_seen",
-            (name, item["itemId"], price, shipping is not None, now, now),
-        )
-        if first_poll or not is_new:
+        price, shipping = d
+        # INSERT OR IGNORE keeps the price it was listed at; rowcount says whether it is new.
+        if not db.execute("INSERT OR IGNORE INTO listing VALUES (?, ?, ?, ?)", (name, item["itemId"], price, min(listed_at(item, now), now))).rowcount:
             continue
-        # An unknown shipping cost makes the z-score meaningless, so those
-        # listings can only qualify on max_price and the push says so.
-        z = robust_z(price, history) if enough and shipping is not None else None
-        cheap = price <= watch.get("max_price", 0)
-        outlier = z is not None and z <= watch.get("max_z", float("-inf"))
-        if cheap or outlier:
-            deals.append({"title": title, "price": price, "shipping": shipping, "z": z, "median": median, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
+        if first_poll or m is None:
+            continue
+        # Measured from the lower of today's trend price and the recent
+        # median: in a falling market that's the trend, so riding the slope
+        # down isn't a deal; in a rising one it's the median, so lagging the
+        # climb isn't either.
+        z = (price - min(m["level"], m["expected"])) / m["spread"]
+        if z <= max_z:
+            deals.append({**m, "title": title, "price": price, "shipping": shipping, "z": z, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
     baseline = None
     if first_poll:
-        recorded = [p for (p,) in db.execute("SELECT price FROM listing WHERE watch = ? AND shipping_known", (name,))]
-        baseline = {"count": len(recorded), "median": statistics.median(recorded) if recorded else None}
+        recorded = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ?", (name, cutoff)).fetchall()
+        days = len({int((now - t) // DAY) for t, _ in recorded})
+        baseline = {"count": len(recorded), "median": statistics.median(p for _, p in recorded) if recorded else None, "days_to_go": max(0, min_days - days)}
     return sorted(deals, key=lambda d: d["price"]), baseline
 
 
@@ -157,14 +211,28 @@ def push(title: str, message: str, click: str | None = None, image: str | None =
     if image:
         body["attach"] = image
     req = urllib.request.Request(env("NTFY_URL"), json.dumps(body).encode(), {"Authorization": f"Bearer {env('NTFY_TOKEN')}", "Content-Type": "application/json"})
-    urllib.request.urlopen(req, timeout=30).close()
+    try:
+        urllib.request.urlopen(req, timeout=30).close()
+    except urllib.error.HTTPError as e:
+        # ntfy refusing this one message as malformed or too big will refuse
+        # it every time. Raising would roll the poll back and retry it
+        # forever, stalling the watch, so drop it instead. Anything else
+        # (auth, permissions, outage) raises, so the poll fails and is retried
+        # and the failure alert can fire.
+        if e.code in (400, 413):
+            log.error("ntfy rejected %r: %s %s", title, e.code, e.read()[:200])
+            return
+        raise
 
 
 def push_deals(watch: dict, deals: list[dict]) -> None:
     for d in deals[:MAX_PUSHES]:
-        ship = "shipping not quoted" if d["shipping"] is None else ("free shipping" if d["shipping"] == 0 else f"${d['price'] - d['shipping']:.2f} + ${d['shipping']:.2f} shipping")
-        stats = f"z {d['z']:.1f}, median ${d['median']:.2f}" if d["z"] is not None else (f"median ${d['median']:.2f}" if d["median"] else "")
-        lines = [d["title"], " · ".join(x for x in (ship, d["condition"], d["seller"], stats) if x)]
+        ship = "free shipping" if d["shipping"] == 0 else f"${d['price'] - d['shipping']:.2f} + ${d['shipping']:.2f} shipping"
+        lines = [
+            d["title"],
+            " · ".join(x for x in (ship, d["condition"], d["seller"]) if x),
+            f"Recent median ${d['level']:.0f}; trend ({d['per_week']:+.0f}/week) puts today at ${d['expected']:.0f}. z {d['z']:.1f} under the lower of the two.",
+        ]
         push(f"{watch['name']}: ${d['price']:.2f} delivered", "\n".join(lines), click=d["url"], image=d["image"], priority=4, tags=["moneybag"])
     if len(deals) > MAX_PUSHES:
         rest = deals[MAX_PUSHES:]
@@ -177,10 +245,24 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str]:
     for watch in config.get("watch", []):
         try:
             items = search(watch, str(config["zip"]))
+            if db.execute("SELECT 1 FROM seeded WHERE watch = ?", (watch["name"],)).fetchone() is None:
+                # New watch: page back through what's already listed to seed
+                # its history. A full page means there may be more.
+                since = time.time() - watch.get("history_days", 14) * DAY
+                while items and len(items) < SEED_LIMIT and len(items) % 200 == 0 and listed_at(items[-1], 0) >= since:
+                    items += search(watch, str(config["zip"]), len(items))
             deals, baseline = check(db, watch, items, time.time())
             if baseline:
+                # Commit the seed before announcing it. A first poll has no
+                # deals to lose, and if a failed push rolled it back, the next
+                # poll would page back through 1,000 listings again.
+                db.commit()
                 median = f", median ${baseline['median']:.2f} delivered" if baseline["median"] is not None else ""
-                push(f"Watching {watch['name']}", f"{baseline['count']} listings recorded as the baseline{median}. Alerts start with the next new listing.", tags=["eyes"])
+                start = "Alerts are on." if not baseline["days_to_go"] else f"Alerts start in about {baseline['days_to_go']} days, once there's enough history to tell a deal from a falling market."
+                try:
+                    push(f"Watching {watch['name']}", f"{baseline['count']} listings from the last two weeks recorded{median}. {start}", tags=["eyes"])
+                except Exception:
+                    log.exception("could not announce %s", watch["name"])
             push_deals(watch, deals)
             # Only now are this poll's listings "seen". Committing before the
             # pushes would lose a deal for good whenever ntfy is unreachable.
@@ -200,10 +282,7 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config_path = Path(os.environ.get("WATCHES", "/app/watches.toml"))
     db = sqlite3.connect(os.environ.get("DB", "/data/listings.db"))
-    db.execute(
-        "CREATE TABLE IF NOT EXISTS listing (watch TEXT, item_id TEXT, price REAL, shipping_known INTEGER,"
-        " first_seen REAL, last_seen REAL, PRIMARY KEY (watch, item_id))"
-    )
+    db.executescript(SCHEMA)
     failing_since = None
     alerted = False
     while True:

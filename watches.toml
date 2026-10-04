@@ -9,21 +9,31 @@ interval_minutes = 1
 # Shipping is quoted to this ZIP. Without it eBay omits calculated shipping.
 zip = "10001"
 
-# A new listing alerts when EITHER rule fires. Leave one out to disable it.
+# A new listing alerts when its delivered price (item + cheapest shipping) is
+# max_z or more spreads under the LOWER of
+#   - the median of listings posted in the last history_days, and
+#   - where the price trend over those days puts today's price.
+# In a falling market that is the trend, so a listing just riding the slope
+# down stays quiet; in a rising one it is the median. The spread is the
+# scatter around the trend line, so a steep trend doesn't widen it.
 #
 #   name          shown in alerts. Price history is keyed by it, so rename the
-#                 watch when you change its query, or the old history skews z.
+#                 watch when you change its query, or the old history skews it.
 #   query         eBay keyword search
-#   max_price     alert at or under this delivered price (item + cheapest shipping)
-#   max_z         alert at or under this robust z-score versus listings seen in
-#                 the last history_days (default 30). -2 is roughly "cheaper
-#                 than 98% of comparable listings", -2.5 than 99.4%. At ~100
-#                 new listings a day per model, that's ~2 vs ~0.6 alerts a day. Needs min_samples (default
-#                 20) priced listings first, so it is silent for a watch's
-#                 first few polls on a rare item.
+#   max_z         default -2.5. Spreads are robust (median absolute deviation)
+#                 standard deviations, so -2.5 means roughly the cheapest 0.6%.
+#                 Raise towards -2 for more alerts. For a watch's first two
+#                 weeks its history is seeded from listings still up, which
+#                 lack the cheap ones that sold fast; that understates the
+#                 spread, so expect it to be a little chattier until then.
+#   history_days  default 14. The window for both the median and the trend.
+#   min_days      default 7. No alerts until history has listings from this
+#                 many separate days: a trend needs time to show. A new watch
+#                 seeds its history from what is already listed, so for a
+#                 popular item this is met on the first poll.
 #   min_price     ignore anything under this. Drops "box only", parts and
-#                 accessory listings, which would otherwise be the lowest
-#                 z-scores of all.
+#                 accessory listings, which would otherwise look like the best
+#                 deals of all.
 #   exclude       ignore titles containing any of these (case-insensitive)
 #   min_seller_feedback, min_seller_percent
 #                 ignore sellers below this feedback count / positive %.
@@ -36,25 +46,22 @@ zip = "10001"
 #                 listings. Adding "AUCTION" compares current bids, which are
 #                 near-zero on fresh auctions and will alert constantly.
 #
-# The first poll of a new watch records a baseline and alerts on nothing; you
-# get one "Watching ..." push to confirm it is working.
+# Listings with no quoted shipping (local pickup, freight) and multi-variation
+# listings are ignored. The first poll of a new watch records what is already
+# listed (up to 1,000 listings, a few extra API calls once) and alerts on
+# nothing; you get one "Watching ..." push saying whether alerts are on yet.
 
-# One watch per GPU model: the z-score compares a listing against its own
-# model's prices, so mixing a 6700 XT into the 6800 XT history would make
-# every 6700 XT look like a deal. All three are restricted to eBay's
-# Graphics/Video Cards category (27386), which keeps out whole PCs and
-# laptops. min_price drops coolers, backplates and parts listings, which
-# also escape the exclude list surprisingly often.
-#
-# max_price caps are a first guess at "clearly a good deal" on the used
-# market. The "Watching ..." push on the first poll reports each model's
-# median delivered price: set the caps against that.
+# One watch per GPU model: a listing is compared against its own model's
+# prices, so mixing a 6700 XT into the 6800 XT history would make every
+# 6700 XT look like a deal. All three are restricted to eBay's Graphics/Video
+# Cards category (27386), which keeps out whole PCs and laptops. min_price
+# drops coolers, backplates and parts listings, which also escape the exclude
+# list surprisingly often.
 
 [[watch]]
 name = "RX 6700 XT"
 query = "rx 6700 xt"
 category_ids = [27386]
-max_price = 180
 max_z = -2.5
 min_seller_feedback = 10
 min_seller_percent = 97
@@ -65,7 +72,6 @@ exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is",
 name = "RX 6800"
 query = "rx 6800"
 category_ids = [27386]
-max_price = 240
 max_z = -2.5
 min_seller_feedback = 10
 min_seller_percent = 97
@@ -77,7 +83,6 @@ exclude = ["6800 xt", "6800xt", "for parts", "parts only", "not working", "broke
 name = "RX 6800 XT"
 query = "rx 6800 xt"
 category_ids = [27386]
-max_price = 290
 max_z = -2.5
 min_seller_feedback = 10
 min_seller_percent = 97
