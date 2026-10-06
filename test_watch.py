@@ -170,6 +170,20 @@ class CheckTest(unittest.TestCase):
         quote.assert_called_once_with("calc", "10001")
         self.assertEqual([(d["price"], d["shipping"]) for d in deals], [(260, 20)])
 
+    def test_failing_lookup_is_retried_twice_then_given_up_without_failing_the_poll(self) -> None:
+        seed(self.db, lambda d: 300)
+        calc = item("calc", 240, None)
+        calc["shippingOptions"] = [{"shippingCostType": "CALCULATED"}]
+        recorded = "SELECT count(*) FROM listing WHERE item_id = 'calc'"
+        with mock.patch.object(watch, "_quote_failures", watch.collections.Counter()), mock.patch.object(watch, "shipping_quote", side_effect=OSError("eBay 503")) as quote:
+            for _ in range(2):
+                self.assertEqual(watch.check(self.db, W, [calc], NOW, "10001")[0], [])
+                self.assertEqual(self.db.execute(recorded).fetchone()[0], 0)
+            watch.check(self.db, W, [calc], NOW, "10001")
+            watch.check(self.db, W, [calc], NOW, "10001")
+        self.assertEqual(quote.call_count, 3)
+        self.assertEqual(self.db.execute(recorded + " AND price IS NULL").fetchone()[0], 1)
+
     def test_unquotable_listing_is_remembered_but_kept_out_of_the_statistics(self) -> None:
         seed(self.db, lambda d: 300)
         pickup, ended, old = item("pickup", 250, None), item("ended", 250, None), item("old", 250, None, listed=NOW - 40 * DAY)

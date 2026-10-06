@@ -8,6 +8,7 @@ Standard library only, so it runs on a stock python image with nothing to build.
 """
 
 import base64
+import collections
 import json
 import logging
 import os
@@ -47,8 +48,13 @@ CREATE TABLE IF NOT EXISTS listing (watch TEXT, item_id TEXT, price REAL, listed
 CREATE TABLE IF NOT EXISTS seeded (watch TEXT PRIMARY KEY);
 """
 
+QUOTE_ATTEMPTS = 3
+
 log = logging.getLogger("ebay-watch")
 _token = {"value": "", "expires": 0.0}
+# Failed shipping lookups per listing. In memory: a restart just allows a few
+# more retries.
+_quote_failures: collections.Counter = collections.Counter()
 
 
 def env(name: str) -> str:
@@ -215,7 +221,18 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
         # passed every filter above and fall inside the history window, so it
         # stays at a few API calls a day.
         if d is None and t >= cutoff and any(o.get("shippingCostType") == "CALCULATED" for o in item.get("shippingOptions", [])):
-            cost = shipping_quote(item["itemId"], zip_code)
+            try:
+                cost = shipping_quote(item["itemId"], zip_code)
+            except Exception:
+                # Never fail the poll over one lookup: the rollback would throw
+                # away this poll's other lookups and redo them every minute,
+                # burning the quota all watches share. Retry on the next
+                # couple of polls, then record it unpriced and move on.
+                _quote_failures[item["itemId"]] += 1
+                log.warning("shipping lookup for %s failed (%d)", item["itemId"], _quote_failures[item["itemId"]], exc_info=True)
+                if _quote_failures[item["itemId"]] < QUOTE_ATTEMPTS:
+                    continue
+                cost = None
             d = None if cost is None else (float(item["price"]["value"]) + cost, cost)
         # Recorded either way, so nothing is looked up twice. A NULL price (no
         # quote: pickup only, freight, ended) stays out of the statistics.
