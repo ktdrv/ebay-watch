@@ -76,10 +76,11 @@ zip = "10001"
 [[watch]]
 name = "Ryzen 5 5600X"
 query = "ryzen 5600x"
-# Not new: sealed stock is listed at collector prices ($250-500 for a 5600X
-# that sells used for ~$140), a separate market that would wreck the stats.
+# Everything but sealed new (1000): sealed stock is listed at collector
+# prices ($250-500 for a 5600X that sells used for ~$140), a separate market
+# that would wreck the stats. 1500 is eBay's "New other", i.e. open box.
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-match = '5600\s*-?x(?!\s*-?(3d|t))'
+match = '5600\s*-?x(?!\s*-?(3d|t\b))'
 category_ids = [164]
 interval_minutes = 1.5
 max_z = -2.0
@@ -89,10 +90,11 @@ exclude = ["x3d", "lot of", "bundle", "combo", "motherboard", "bent", "for parts
 [[watch]]
 name = "Ryzen 7 5700X"
 query = "ryzen 5700x"
-# Not new: sealed stock is listed at collector prices ($250-500 for a 5600X
-# that sells used for ~$140), a separate market that would wreck the stats.
+# Everything but sealed new (1000): sealed stock is listed at collector
+# prices ($250-500 for a 5600X that sells used for ~$140), a separate market
+# that would wreck the stats. 1500 is eBay's "New other", i.e. open box.
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-match = '5700\s*-?x(?!\s*-?(3d|t))'
+match = '5700\s*-?x(?!\s*-?(3d|t\b))'
 category_ids = [164]
 interval_minutes = 1.5
 max_z = -2.0
@@ -102,8 +104,9 @@ exclude = ["x3d", "lot of", "bundle", "combo", "motherboard", "bent", "for parts
 [[watch]]
 name = "Ryzen 7 5700X3D"
 query = "ryzen 5700x3d"
-# Not new: sealed stock is listed at collector prices ($250-500 for a 5600X
-# that sells used for ~$140), a separate market that would wreck the stats.
+# Everything but sealed new (1000): sealed stock is listed at collector
+# prices ($250-500 for a 5600X that sells used for ~$140), a separate market
+# that would wreck the stats. 1500 is eBay's "New other", i.e. open box.
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
 match = '5700\s*-?x\s*-?3d'
 category_ids = [164]

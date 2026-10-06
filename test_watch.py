@@ -1,8 +1,10 @@
 """Run with: uv run --no-project python -m unittest ebay-watch/test_watch.py"""
 
 import io
+import re
 import sqlite3
 import sys
+import tomllib
 import unittest
 import urllib.error
 from datetime import datetime, timezone
@@ -231,6 +233,19 @@ class CheckTest(unittest.TestCase):
         deals = self.deals([item(f"t{i}", 250, title=t) for i, t in enumerate(titles)], match=r"6800(?!\s*-?xt)")
         self.assertEqual([d["title"] for d in deals], [titles[4]])
 
+    def test_cpu_patterns_from_watches_toml(self) -> None:
+        patterns = {w["name"]: w["match"] for w in tomllib.loads((Path(__file__).parent / "watches.toml").read_text())["watch"]}
+        cases = {
+            "Ryzen 5 5600X": (["AMD Ryzen 5 5600X 6-Core", "AMD RYZEN 5 5600X Tray", "Ryzen 5 5600x tested working", "R5 5600-X"], ["AMD Ryzen 5 5600X3D", "Ryzen 5 5600X 3D", "XFX RX 5600 XT 6GB", "RX 5600XT", "Ryzen 5 5600 6-Core", "Ryzen 5 5600G"]),
+            "Ryzen 7 5700X": (["AMD Ryzen 7 5700X 8-Core", "Ryzen 7 5700X Thermal paste included", "5700X Tested"], ["R7 5700X3D", "Ryzen 7 5700X 3D", "RX 5700 XT 8GB", "Ryzen 7 5700G"]),
+            "Ryzen 7 5700X3D": (["AMD Ryzen 7 5700X3D", "Ryzen 7 5700X 3D", "R7 5700x3d tray"], ["Ryzen 7 5700X 8-Core", "Ryzen 7 5800X3D"]),
+        }
+        for name, (yes, no) in cases.items():
+            for t in yes:
+                self.assertIsNotNone(re.search(patterns[name], t, re.IGNORECASE), f"{name} should match {t!r}")
+            for t in no:
+                self.assertIsNone(re.search(patterns[name], t, re.IGNORECASE), f"{name} should not match {t!r}")
+
     def test_workstation_card_is_not_an_rx_6800(self) -> None:
         seed(self.db, lambda d: 300)
         titles = ["AMD Radeon Pro W6800 32GB GDDR6 Workstation Graphics Card", "MSI RADEON RX6800 GAMING X TRIO 16"]
@@ -306,6 +321,27 @@ class PollTest(unittest.TestCase):
             self.assertEqual(watch.poll(new_db(), {"zip": "10001", "watch": [W]}), [])
         self.assertEqual([c.args[2] for c in search.call_args_list[1:]], [200, 400, 600])
         self.assertIn("600 listings", push.call_args.args[1])
+
+    def test_one_failing_watch_alerts_even_while_others_succeed(self) -> None:
+        clock = [NOW]
+        config = {"zip": "10001", "watch": [{**W, "name": "cpu", "interval_minutes": 1.5}, {**W, "name": "gpu", "interval_minutes": 15}]}
+
+        def search(w: dict, *a: object) -> list:
+            if w["name"] == "cpu":
+                raise OSError("HTTP Error 400")
+            return []
+
+        with mock.patch.dict(watch._failing, clear=True), mock.patch.object(watch.time, "time", side_effect=lambda: clock[0]), mock.patch.object(watch, "search", side_effect=search), mock.patch.object(watch, "push") as push:
+            # Two hours of 30-second ticks; the healthy gpu watch succeeds in between.
+            for tick in range(240):
+                clock[0] = NOW + tick * 30
+                if watch.poll(new_db(), config) is not None:
+                    watch.alert_failures(clock[0])
+        alerts = [c for c in push.call_args_list if c.args[0] == "eBay watcher is failing"]
+        self.assertEqual(len(alerts), 1)  # once, not every tick after the hour
+        self.assertIn("cpu, for 6", alerts[0].args[1])
+        self.assertIn("HTTP Error 400", alerts[0].args[1])
+        self.assertNotIn("gpu", alerts[0].args[1])
 
     def test_seeding_happens_once_even_if_nothing_was_recorded_or_announced(self) -> None:
         # Every listing filtered out, and the "Watching" push fails: the

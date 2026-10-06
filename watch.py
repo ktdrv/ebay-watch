@@ -74,6 +74,8 @@ _status: dict = {"last_poll": None, "errors": []}
 _last_polled: dict[str, float] = {}
 # How often the main loop wakes to see which watches are due.
 TICK = 30
+# Watches whose checks are failing: name -> since, last error, alerted yet.
+_failing: dict[str, dict] = {}
 
 
 def env(name: str) -> str:
@@ -367,6 +369,7 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str] | None:
             # Only now are this poll's listings "seen". Committing before the
             # pushes would lose a deal for good whenever ntfy is unreachable.
             db.commit()
+            _failing.pop(watch["name"], None)
             log.info("%s: %d listings fetched, %d deals", watch["name"], len(items), len(deals))
         except Exception as e:
             # Undo this watch's half-recorded poll so its listings are retried
@@ -375,7 +378,24 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str] | None:
             db.rollback()
             log.exception("%s failed", watch.get("name"))
             errors.append(f"{watch.get('name')}: {e}")
+            _failing.setdefault(watch["name"], {"since": now, "alerted": False})["error"] = str(e)
     return errors if polled else None
+
+
+def alert_failures(now: float) -> None:
+    """Push once for each watch that has failed every check for an hour.
+    Tracked per watch: with watches on different intervals, a healthy
+    watch's success must not reset a broken one's clock."""
+    due = [(name, f) for name, f in _failing.items() if not f["alerted"] and now - f["since"] >= FAIL_ALERT_AFTER]
+    if not due:
+        return
+    try:
+        push("eBay watcher is failing", "\n".join(f"{name}, for {(now - f['since']) / 60:.0f} min: {f['error']}" for name, f in due), priority=4, tags=["warning"])
+    except Exception:
+        log.exception("could not push the failure alert")
+        return
+    for _, f in due:
+        f["alerted"] = True
 
 
 def dashboard_data(db: sqlite3.Connection, config: dict, now: float) -> list[dict]:
@@ -447,30 +467,26 @@ def main() -> None:
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     serve_dashboard(db_path, config_path)
-    failing_since = None
-    alerted = False
     while True:
+        started = time.time()
         try:
             # Re-read every tick so editing watches.toml needs no restart.
-            errors = poll(db, tomllib.loads(config_path.read_text()))
+            config = tomllib.loads(config_path.read_text())
+            # Forget failures of watches no longer configured, and of the
+            # config itself now that it reads.
+            for name in set(_failing) - {w["name"] for w in config.get("watch", [])}:
+                del _failing[name]
+            polled = poll(db, config) is not None
         except Exception as e:
-            log.exception("poll failed")
-            errors = [str(e)]
-        if errors is None:  # nothing was due
-            time.sleep(TICK)
-            continue
-        _status.update(last_poll=time.time(), errors=errors)
-        if not errors:
-            failing_since, alerted = None, False
-        elif failing_since is None:
-            failing_since = time.time()
-        elif not alerted and time.time() - failing_since >= FAIL_ALERT_AFTER:
-            try:
-                push("eBay watcher is failing", f"Every poll for {(time.time() - failing_since) / 60:.0f} minutes. Last errors:\n" + "\n".join(errors), priority=4, tags=["warning"])
-                alerted = True
-            except Exception:
-                log.exception("could not push the failure alert")
-        time.sleep(TICK)
+            # Unreadable watches.toml: tracked like a failing watch so it alerts too.
+            log.exception("could not read watches.toml")
+            _failing.setdefault("watches.toml", {"since": started, "alerted": False})["error"] = str(e)
+            polled = True
+        if polled:
+            _status.update(last_poll=time.time(), errors=[f"{name}: {f['error']}" for name, f in _failing.items()])
+            alert_failures(time.time())
+        # Less the check's own duration, so watches keep their intervals.
+        time.sleep(max(1.0, TICK - (time.time() - started)))
 
 
 if __name__ == "__main__":
