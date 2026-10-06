@@ -1,19 +1,49 @@
-"""Render the watcher's dashboard: one HTML page, charts drawn as inline SVG.
+"""Render the watcher's dashboard: one HTML page per card, charts drawn as inline SVG.
 
 Takes plain numbers from watch.dashboard_data() and knows nothing about eBay
-or the statistics, so a layout change can't break alerting. No JavaScript:
-hovering a dot shows its listing through the SVG's native <title> tooltip,
-and the table under each chart is the same data in readable form.
+or the statistics, so a layout change can't break alerting. The only script
+is the dot tooltip; the table under each chart carries the same data without it.
 """
 
 import html
 import time
+import urllib.parse
 
 # Plot geometry in SVG units; the SVG scales to the card's width.
 W, H = 720, 260
 LEFT, RIGHT, TOP, BOTTOM = 52, 132, 14, 30
 DAY = 86400
 TABLE_ROWS = 20
+
+# Shows a dot's listing on hover or keyboard focus. Every field goes in with
+# textContent: titles and seller names are written by eBay sellers.
+SCRIPT = """
+for (const chart of document.querySelectorAll('.chart')) {
+  const tip = chart.querySelector('.tip');
+  const show = (a) => {
+    const d = a.dataset;
+    tip.querySelector('.tip-price').textContent = d.price + ' delivered';
+    for (const k of ['ship', 'title', 'meta', 'z']) tip.querySelector('.tip-' + k).textContent = d[k];
+    tip.querySelector('.tip-key').style.borderColor = d.alerted ? 'var(--deal)' : 'var(--listing)';
+    tip.querySelector('.tip-badge').hidden = !d.alerted;
+    tip.hidden = false;
+    // Above and to the right of the dot; flipped when that would leave the chart.
+    const box = chart.getBoundingClientRect(), dot = a.querySelector('.mark').getBoundingClientRect();
+    let x = dot.right - box.left + 10, y = dot.top - box.top - tip.offsetHeight - 6;
+    if (x + tip.offsetWidth > box.width) x = dot.left - box.left - tip.offsetWidth - 10;
+    if (y < 0) y = dot.bottom - box.top + 6;
+    tip.style.left = Math.max(0, x) + 'px';
+    tip.style.top = y + 'px';
+  };
+  const hide = () => { tip.hidden = true; };
+  for (const a of chart.querySelectorAll('a.pt')) {
+    a.addEventListener('pointerenter', () => show(a));
+    a.addEventListener('focus', () => show(a));
+    a.addEventListener('pointerleave', hide);
+    a.addEventListener('blur', hide);
+  }
+}
+"""
 
 CSS = """
 .viz-root {
@@ -41,6 +71,13 @@ h1 { font-size: 20px; font-weight: 600; margin: 0 0 4px; }
 .status-bad { color: var(--ink); }
 .status-bad::before, .pill-on::before { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; content: ""; }
 .status-bad::before { background: var(--critical); }
+.tabs { display: flex; gap: 4px; flex-wrap: wrap; border-bottom: 1px solid var(--grid); margin-bottom: 24px; }
+.tab { padding: 8px 14px; margin-bottom: -1px; color: var(--ink-2); text-decoration: none; border-bottom: 2px solid transparent; white-space: nowrap; }
+.tab:hover { color: var(--ink); }
+.tab[aria-current] { color: var(--ink); font-weight: 600; border-bottom-color: var(--ink); }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 8px; vertical-align: 1px; }
+.dot-on { background: var(--good); }
+.dot-off { box-shadow: inset 0 0 0 1.5px var(--muted); }
 section { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 24px; margin-bottom: 24px; }
 .head { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
 h2 { font-size: 17px; font-weight: 600; margin: 0; }
@@ -67,6 +104,16 @@ tr.deal td:first-child { box-shadow: inset 3px 0 var(--deal); }
 .badge { font-size: 12px; color: var(--ink); white-space: nowrap; }
 .badge::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--deal); margin-right: 5px; }
 .note { color: var(--ink-2); font-size: 12px; margin: 8px 0 0; }
+.chart { position: relative; }
+a.pt { outline: none; }
+a.pt:hover .mark, a.pt:focus-visible .mark { stroke-width: 3; transform-box: fill-box; transform-origin: center; transform: scale(1.4); }
+a.pt:focus-visible .mark { stroke: var(--ink); }
+.tip { position: absolute; z-index: 2; pointer-events: none; width: max-content; max-width: 300px; padding: 10px 12px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.14);
+  color: var(--ink-2); font-size: 12px; line-height: 1.45; }
+.tip-value { display: flex; align-items: center; gap: 8px; color: var(--ink); font-size: 16px; font-weight: 600; }
+.tip-key { width: 14px; border-top: 2px solid; }
+.tip-title { color: var(--ink); margin: 4px 0 2px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .empty { color: var(--ink-2); padding: 32px 0; }
 """
 
@@ -137,12 +184,23 @@ def chart(w: dict, now: float) -> str:
     # Oldest first so the newest dots sit on top.
     for l in reversed(listings):
         cx, cy = x(l["days_ago"]), y(l["price"])
-        tip = html.escape(f"{l['title']}\n{money(l['price'])} delivered · {ago(l['days_ago'] * DAY)}")
         color = "var(--deal)" if l["alerted"] else "var(--listing)"
-        mark = (f'<path d="M{cx:.1f},{cy - 5:.1f} l5,8 h-10 z" fill="{color}" stroke="var(--surface)" stroke-width="2"/>' if l["price"] > hi
-                else f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="4" fill="{color}" stroke="var(--surface)" stroke-width="2"/>')
+        mark = (f'<path class="mark" d="M{cx:.1f},{cy - 5:.1f} l5,8 h-10 z" fill="{color}" stroke="var(--surface)" stroke-width="2"/>' if l["price"] > hi
+                else f'<circle class="mark" cx="{cx:.1f}" cy="{cy:.1f}" r="4" fill="{color}" stroke="var(--surface)" stroke-width="2"/>')
+        # The tooltip script reads these and inserts them as text, never HTML:
+        # titles and seller names are written by eBay sellers.
+        tip = {
+            "price": money(l["price"]),
+            "ship": "free shipping" if not l["shipping"] else f"{money(l['price'] - l['shipping'])} + {money(l['shipping'])} shipping",
+            "title": l["title"] or "",
+            "meta": f"Listed {ago(l['days_ago'] * DAY)} · {l['seller'] or ''}",
+            "z": "" if l["z"] is None else f"z {l['z']:+.1f} vs the going rate".replace("-", "−"),
+            "alerted": "1" if l["alerted"] else "",
+        }
+        data = " ".join(f'data-{k}="{html.escape(v)}"' for k, v in tip.items())
+        label = html.escape(f"{l['title']}, {money(l['price'])} delivered, listed {ago(l['days_ago'] * DAY)}")
         # The transparent circle is the hover target, much bigger than the dot.
-        out.append(f'<a href="{html.escape(l["url"] or "#")}" target="_blank"><title>{tip}</title><circle cx="{cx:.1f}" cy="{cy:.1f}" r="12" fill="transparent"/>{mark}</a>')
+        out.append(f'<a class="pt" href="{html.escape(l["url"] or "#")}" target="_blank" rel="noopener" aria-label="{label}" {data}><circle cx="{cx:.1f}" cy="{cy:.1f}" r="12" fill="transparent"/>{mark}</a>')
 
     # Direct labels at the right end of each line. Where two would overlap,
     # push them apart and draw a short leader back to the line.
@@ -155,7 +213,12 @@ def chart(w: dict, now: float) -> str:
             out.append(f'<line x1="{x(0) + 2:.1f}" y1="{line_y:.1f}" x2="{x(0) + 8:.1f}" y2="{label_y:.1f}" stroke="var(--axis)" stroke-width="1"/>')
         out.append(f'<text class="line-label" x="{x(0) + 10:.1f}" y="{label_y + 4:.1f}">{html.escape(text)}</text>')
     out.append("</svg>")
-    return "\n".join(out)
+    tooltip = (
+        '<div class="tip" hidden><div class="tip-value"><span class="tip-key"></span><span class="tip-price"></span></div>'
+        '<div class="tip-ship"></div><div class="tip-title"></div><div class="tip-meta"></div>'
+        '<div><span class="tip-z"></span> <span class="badge tip-badge">Alerted</span></div></div>'
+    )
+    return f'<div class="chart">{"".join(out)}{tooltip}</div>'
 
 
 def table(w: dict, now: float) -> str:
@@ -174,7 +237,7 @@ def table(w: dict, now: float) -> str:
     more = f'<p class="note">Newest {TABLE_ROWS} of {len(w["listings"])}. Every listing is a dot in the chart; hover one for its title, click to open it.</p>' if len(w["listings"]) > TABLE_ROWS else ""
     return (
         '<table><thead><tr><th>Listed</th><th class="num">Delivered</th><th class="num">Shipping</th>'
-        '<th class="num" title="Spreads above (+) or below (−) the going rate when it was listed">z</th><th>Listing</th><th>Seller</th></tr></thead>'
+        '<th class="num" title="Spreads above (+) or below (−) the going rate on the day it was listed, judged by the current market">z</th><th>Listing</th><th>Seller</th></tr></thead>'
         f"<tbody>{''.join(rows)}</tbody></table>{more}"
     )
 
@@ -202,7 +265,21 @@ def section(w: dict, now: float) -> str:
     return f'<section><div class="head"><h2>{html.escape(w["name"])}</h2>{pill}</div><div class="stats">{stat_html}</div>{body}</section>'
 
 
-def render(watches: list[dict], status: dict, now: float) -> str:
+def tabs(watches: list[dict], current: dict) -> str:
+    # Plain links rather than script, so the chosen card survives the
+    # auto-refresh and can be bookmarked.
+    links = []
+    for w in watches:
+        here = ' aria-current="page"' if w is current else ""
+        state = "on" if w["market"] else "off"
+        hint = "Alerts on" if w["market"] else "Warming up"
+        links.append(f'<a class="tab"{here} href="?{html.escape(urllib.parse.urlencode({"card": w["name"]}))}" title="{hint}"><span class="dot dot-{state}"></span>{html.escape(w["name"])}</a>')
+    return f'<nav class="tabs">{"".join(links)}</nav>'
+
+
+def render(watches: list[dict], status: dict, now: float, card: str | None = None) -> str:
+    """The page for one card (the first if `card` names none), with a tab per watch."""
+    current = next((w for w in watches if w["name"] == card), watches[0] if watches else None)
     if status["last_poll"] is None:
         sub = '<p class="sub">Starting up: no check has finished yet.</p>'
     elif status["errors"]:
@@ -213,5 +290,6 @@ def render(watches: list[dict], status: dict, now: float) -> str:
         '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">'
         f'<meta http-equiv="refresh" content="120"><title>eBay watch</title><style>{CSS}</style></head>'
         f'<body><div class="viz-root"><main><header><h1>eBay watch</h1>{sub}</header>'
-        f"{''.join(section(w, now) for w in watches)}</main></div></body></html>"
+        f"{tabs(watches, current) + section(current, now) if current else '<p class=empty>No watches in watches.toml.</p>'}</main></div>"
+        f"<script>{SCRIPT}</script></body></html>"
     )

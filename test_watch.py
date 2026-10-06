@@ -64,6 +64,18 @@ class DeliveredTest(unittest.TestCase):
         self.assertEqual(watch.listed_at(item("a", 100, listed=NOW), 5.0), NOW)
 
 
+class SearchTest(unittest.TestCase):
+    def test_only_us_located_listings_by_default(self) -> None:
+        def filters(w: dict) -> str:
+            with mock.patch.object(watch, "ebay_token", return_value="t"), mock.patch.object(watch.urllib.request, "urlopen") as urlopen:
+                urlopen.return_value.__enter__.return_value = io.BytesIO(b"{}")
+                watch.search(w, "10001")
+            return watch.urllib.parse.parse_qs(watch.urllib.parse.urlsplit(urlopen.call_args.args[0].full_url).query)["filter"][0]
+
+        self.assertIn("itemLocationCountry:US", filters(W))
+        self.assertNotIn("itemLocationCountry", filters({**W, "item_location": ""}))
+
+
 class MarketTest(unittest.TestCase):
     def test_overpriced_listings_do_not_widen_the_spread(self) -> None:
         # Imports listed at two to three times the going rate linger unsold;
@@ -93,6 +105,12 @@ class MarketTest(unittest.TestCase):
         self.assertGreater(m["level"], 250)
         # Scatter around the line is the ±$9 noise, not the $130 trend
         self.assertLess(m["spread"], 12)
+
+    def test_many_units_at_one_price_keep_the_spread_tight(self) -> None:
+        # The reviewer's case: 14 listings at $300 and 6 cheaper ones. Measured
+        # only strictly below the going rate, the bar fell to $226.
+        h = [(NOW - (i % 7) * DAY - 60 - i, 300.0) for i in range(14)] + [(NOW - (i % 7) * DAY - 99 - i, p) for i, p in enumerate([250, 260, 270, 280, 285, 290])]
+        self.assertGreater(watch.bar(watch.market(h, NOW, 15, 7), -2.0), 270)
 
     def test_identical_prices_keep_a_floor_spread(self) -> None:
         db = new_db()
@@ -313,8 +331,31 @@ class DashboardTest(unittest.TestCase):
     def test_renders_a_warming_up_watch_and_a_failing_poll(self) -> None:
         db = new_db()
         seed(db, lambda d: 300, days=3)
-        page = dashboard.render(watch.dashboard_data(db, {"watch": [W, {**W, "name": "empty"}]}, NOW), {"last_poll": NOW - 120, "errors": ["gpu: HTTP Error 401"]}, NOW)
+        data = watch.dashboard_data(db, {"watch": [W, {**W, "name": "empty"}]}, NOW)
+        page = dashboard.render(data, {"last_poll": NOW - 120, "errors": ["gpu: HTTP Error 401"]}, NOW)
         # 30 listings is enough; only the days are short, so only they show.
         self.assertIn("Warming up: 3 of 7 days</span>", page)
-        self.assertIn("No priced listings yet.", page)
         self.assertIn("failed: gpu: HTTP Error 401", page)
+        self.assertIn("No priced listings yet.", dashboard.render(data, {"last_poll": None, "errors": []}, NOW, "empty"))
+
+    def test_tabs_show_one_card_and_fall_back_to_the_first(self) -> None:
+        db = new_db()
+        seed(db, lambda d: 300)
+        data = watch.dashboard_data(db, {"watch": [W, {**W, "name": "R&D card"}]}, NOW)
+        status = {"last_poll": NOW, "errors": []}
+        second = dashboard.render(data, status, NOW, "R&D card")
+        self.assertIn("<h2>R&amp;D card</h2>", second)
+        self.assertNotIn("<h2>gpu</h2>", second)
+        self.assertIn('href="?card=R%26D+card"', second)
+        self.assertIn('aria-current="page" href="?card=R%26D+card"', second)
+        for card in (None, "no such card"):
+            self.assertIn("<h2>gpu</h2>", dashboard.render(data, status, NOW, card))
+
+    def test_tooltip_data_is_escaped(self) -> None:
+        db = new_db()
+        seed(db, lambda d: 300)
+        db.execute("""INSERT INTO listing VALUES ('gpu', 'x', 250, ?, 'RX 6800 "mint" <img src=x onerror=alert(1)>', 'https://www.ebay.com/itm/x', 10, 'eve', 0)""", (NOW - 60,))
+        page = dashboard.render(watch.dashboard_data(db, {"watch": [W]}, NOW), {"last_poll": NOW, "errors": []}, NOW)
+        self.assertIn('data-title="RX 6800 &quot;mint&quot; &lt;img src=x onerror=alert(1)&gt;"', page)
+        self.assertIn('data-ship="$240 + $10 shipping"', page)
+        self.assertNotIn("<img", page)

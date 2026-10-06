@@ -52,6 +52,9 @@ zip = "10001"
 #   condition_ids e.g. [1000] new, [3000] used, [1000, 1500, 2500, 3000] new
 #                 through used. Full list: https://developer.ebay.com/api-docs/sell/static/metadata/condition-id-values.html
 #   category_ids  restrict to eBay categories (the number in a category URL)
+#   item_location default "US": only listings located there. Delivered price
+#                 leaves out import duties, so overseas listings look cheaper
+#                 than they are. "" allows anywhere that ships to the US.
 #   buying_options default ["FIXED_PRICE"], which includes Best Offer
 #                 listings. Adding "AUCTION" compares current bids, which are
 #                 near-zero on fresh auctions and will alert constantly.

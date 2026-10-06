@@ -95,6 +95,11 @@ def ebay_token() -> str:
 def search(watch: dict, zip_code: str, offset: int = 0) -> list[dict]:
     """200 listings matching the watch, newest first, skipping `offset`."""
     filters = ["buyingOptions:{" + "|".join(watch.get("buying_options", ["FIXED_PRICE"])) + "}", "deliveryCountry:US"]
+    # Delivered price leaves out import duties, so an overseas listing is
+    # dearer than it looks; for these cards that was ~40% of listings, mostly
+    # China and Japan, and they would be the likeliest false deals.
+    if watch.get("item_location", "US"):
+        filters.append(f"itemLocationCountry:{watch.get('item_location', 'US')}")
     if "condition_ids" in watch:
         filters.append("conditionIds:{" + "|".join(map(str, watch["condition_ids"])) + "}")
     # No price filter on purpose: the statistics need the whole distribution.
@@ -173,7 +178,9 @@ def market(history: list[tuple[float, float]], now: float, min_listings: int, mi
     level = statistics.median(p for _, p in history)
     residuals = [y - (expected + slope * x) for x, y in points]
     center = statistics.median(residuals)
-    below = [center - r for r in residuals if r < center]
+    # <= so listings right at the going rate count as zero distance: a seller
+    # with a dozen units at one price is a tight market, not an absent one.
+    below = [center - r for r in residuals if r <= center]
     # Floored at 2% of the price: when most listings share one price (a
     # refurbisher's stock), the scatter is ~0 and any small undercut would
     # look like a huge outlier.
@@ -392,13 +399,15 @@ def serve_dashboard(db_path: str, config_path: Path) -> None:
 
     class Handler(http.server.BaseHTTPRequestHandler):
         def do_GET(self) -> None:
-            if urllib.parse.urlsplit(self.path).path != "/":
+            url = urllib.parse.urlsplit(self.path)
+            if url.path != "/":
                 self.send_error(404)
                 return
+            card = urllib.parse.parse_qs(url.query).get("card", [None])[0]
             try:
                 with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
                     now = time.time()
-                    body = dashboard.render(dashboard_data(db, tomllib.loads(config_path.read_text()), now), _status, now).encode()
+                    body = dashboard.render(dashboard_data(db, tomllib.loads(config_path.read_text()), now), _status, now, card).encode()
             except Exception:
                 log.exception("dashboard failed")
                 self.send_error(500)
@@ -421,6 +430,9 @@ def main() -> None:
     config_path = Path(os.environ.get("WATCHES", "/app/watches.toml"))
     db_path = os.environ.get("DB", "/data/listings.db")
     db = sqlite3.connect(db_path)
+    # WAL so a dashboard read never blocks the poll's commit. A commit that
+    # timed out after its pushes went out would roll back and push them again.
+    db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
     serve_dashboard(db_path, config_path)
     failing_since = None
