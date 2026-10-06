@@ -19,19 +19,27 @@ zip = "10001"
 #
 #   name          shown in alerts. Price history is keyed by it, so rename the
 #                 watch when you change its query, or the old history skews it.
-#   query         eBay keyword search
+#   query         eBay keyword search. It is loose: "rx 6800" in the graphics
+#                 card category also returns RTX 5080s and RX 9070s.
+#   match         regex the title must contain (case-insensitive), so only the
+#                 model you mean reaches the statistics. Use a single-quoted
+#                 TOML string so backslashes stay literal.
 #   max_z         default -2.5. Spreads are robust (median absolute deviation)
 #                 standard deviations, so -2.5 means roughly the cheapest 0.6%.
-#                 Raise towards -2 for more alerts. For a watch's first two
-#                 weeks its history is seeded from listings still up, which
-#                 lack the cheap ones that sold fast; that understates the
-#                 spread, so expect it to be a little chattier until then.
-#   history_days  default 14. The window for both the median and the trend.
-#   min_days      default 7. No alerts until history has listings from this
-#                 many separate days: a trend needs time to show. A new watch
-#                 seeds its history from what is already listed, so for a
-#                 popular item this is met on the first poll.
-#   min_price     ignore anything under this. Drops "box only", parts and
+#                 Raise towards -2 for more alerts. For a watch's first
+#                 history_days its history is seeded from listings still up,
+#                 which lack the cheap ones that sold fast; that understates
+#                 the spread, so expect it to be a little chattier until then.
+#   history_days  default 30. The window for both the median and the trend.
+#                 These cards list about once a day, so a shorter window
+#                 leaves too few listings to fit a trend.
+#   min_listings, min_days
+#                 default 15 and 7. No alerts until the window holds this many
+#                 listings across this many separate days. A new watch seeds
+#                 its history from what is already listed, so this is often
+#                 met on the first poll.
+#   min_price     ignore anything with an item price (before shipping) under
+#                 this. Drops "box only", parts and
 #                 accessory listings, which would otherwise look like the best
 #                 deals of all.
 #   exclude       ignore titles containing any of these (case-insensitive)
@@ -46,8 +54,9 @@ zip = "10001"
 #                 listings. Adding "AUCTION" compares current bids, which are
 #                 near-zero on fresh auctions and will alert constantly.
 #
-# Listings with no quoted shipping (local pickup, freight) and multi-variation
-# listings are ignored. The first poll of a new watch records what is already
+# Search results never price calculated shipping, so each new listing that
+# uses it costs one extra API call to quote it to the ZIP. Listings eBay still
+# can't price (pickup only, freight) and multi-variation listings are ignored. The first poll of a new watch records what is already
 # listed (up to 1,000 listings, a few extra API calls once) and alerts on
 # nothing; you get one "Watching ..." push saying whether alerts are on yet.
 
@@ -61,30 +70,35 @@ zip = "10001"
 [[watch]]
 name = "RX 6700 XT"
 query = "rx 6700 xt"
+# Not the 6750 XT or the non-XT 6700
+match = '6700\s*-?xt'
 category_ids = [27386]
 max_z = -2.5
 min_seller_feedback = 10
 min_seller_percent = 97
 min_price = 100
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read description", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
 
 [[watch]]
 name = "RX 6800"
 query = "rx 6800"
+# The query also returns 6800 XTs ("RX 6800 XT", "RX6800XT"), which belong to the next watch.
+# Not the Radeon Pro W6800 workstation card either.
+match = '(?<!w)6800(?!\s*-?xt)'
 category_ids = [27386]
 max_z = -2.5
 min_seller_feedback = 10
 min_seller_percent = 97
 min_price = 140
-# The query also matches 6800 XT listings, which belong to the next watch.
-exclude = ["6800 xt", "6800xt", "for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read description", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
 
 [[watch]]
 name = "RX 6800 XT"
 query = "rx 6800 xt"
+match = '(?<!w)6800\s*-?xt'
 category_ids = [27386]
 max_z = -2.5
 min_seller_feedback = 10
 min_seller_percent = 97
 min_price = 170
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read description", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]

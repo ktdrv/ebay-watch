@@ -68,15 +68,18 @@ class MarketTest(unittest.TestCase):
         sample = list(range(100, 121))
         self.assertLess(watch.spread(sample + [1, 9999]) - watch.spread(sample), 2)
 
-    def test_none_until_enough_days(self) -> None:
-        h = [(NOW - d * DAY - 60, 300.0) for d in range(6)]
-        self.assertIsNone(watch.market(h, NOW, 7))
-        self.assertIsNotNone(watch.market(h + [(NOW - 6 * DAY - 60, 300.0)], NOW, 7))
+    def test_none_until_enough_listings_and_days(self) -> None:
+        def h(n: int, days: int) -> list[tuple[float, float]]:
+            return [(NOW - (i % days) * DAY - 60 - i, 300.0 + i) for i in range(n)]
+
+        self.assertIsNone(watch.market(h(14, 7), NOW, 15, 7))
+        self.assertIsNone(watch.market(h(15, 6), NOW, 15, 7))
+        self.assertIsNotNone(watch.market(h(15, 7), NOW, 15, 7))
 
     def test_reads_a_falling_market_without_inflating_the_spread(self) -> None:
         db = new_db()
         seed(db, lambda d: 200 + 10 * d)  # $10/day cheaper, $200 today
-        m = watch.market(history(db), NOW, 7)
+        m = watch.market(history(db), NOW, 15, 7)
         self.assertAlmostEqual(m["per_week"], -70, delta=1)
         self.assertAlmostEqual(m["expected"], 200, delta=6)
         self.assertGreater(m["level"], 250)
@@ -87,7 +90,7 @@ class MarketTest(unittest.TestCase):
         db = new_db()
         seed(db, lambda d: 300)
         db.execute("UPDATE listing SET price = 300")
-        self.assertEqual(watch.market(history(db), NOW, 7)["spread"], 6)
+        self.assertEqual(watch.market(history(db), NOW, 15, 7)["spread"], 6)
 
 
 class CheckTest(unittest.TestCase):
@@ -101,12 +104,12 @@ class CheckTest(unittest.TestCase):
         already_up = [item(f"b{d}-{i}", 300 + i, listed=NOW - d * DAY - 60) for d in range(10) for i in range(5)]
         deals, baseline = watch.check(self.db, W, already_up + [item("cheap-but-old", 200, listed=NOW - 60)], NOW)
         self.assertEqual(deals, [])
-        self.assertEqual(baseline["days_to_go"], 0)
+        self.assertTrue(baseline["ready"])
         self.assertEqual(len(self.deals([item("new", 260)])), 1)
 
     def test_short_seed_says_how_long_until_alerts(self) -> None:
         _, baseline = watch.check(self.db, W, [item(f"b{i}", 300 + i, listed=NOW - 60) for i in range(30)], NOW)
-        self.assertEqual(baseline["days_to_go"], 6)
+        self.assertFalse(baseline["ready"])
         self.assertEqual(self.deals([item("new", 150)]), [])
 
     def test_flat_market_cheap_listing_alerts(self) -> None:
@@ -123,7 +126,7 @@ class CheckTest(unittest.TestCase):
         # The case this design exists for: $195 is far under the two-week
         # median, but it is about where the falling trend puts today.
         seed(self.db, lambda d: 200 + 10 * d)
-        m = watch.market(history(self.db), NOW, 7)
+        m = watch.market(history(self.db), NOW, 15, 7)
         self.assertLess((195 - m["level"]) / m["spread"], -2.5)
         self.assertEqual(self.deals([item("new", 195)]), [])
 
@@ -153,9 +156,52 @@ class CheckTest(unittest.TestCase):
         seed(self.db, lambda d: 300)
         group = item("group", 250)
         group["itemGroupHref"] = "https://api.ebay.com/buy/browse/v1/item/get_items_by_item_group?item_group_id=1"
-        ignored = [item("parts", 250, title="RX 6800 FOR PARTS"), item("box", 20), item("pickup", 250, None), group]
+        ignored = [item("parts", 250, title="RX 6800 FOR PARTS"), item("box", 20), group]
         self.assertEqual(self.deals(ignored), [])
-        self.assertEqual(self.db.execute("SELECT count(*) FROM listing WHERE item_id IN ('parts', 'box', 'pickup', 'group')").fetchone()[0], 0)
+        self.assertEqual(self.db.execute("SELECT count(*) FROM listing WHERE item_id IN ('parts', 'box', 'group')").fetchone()[0], 0)
+
+    def test_calculated_shipping_is_looked_up_once(self) -> None:
+        seed(self.db, lambda d: 300)
+        calc = item("calc", 240, None)
+        calc["shippingOptions"] = [{"shippingCostType": "CALCULATED"}]
+        with mock.patch.object(watch, "shipping_quote", return_value=20.0) as quote:
+            deals = watch.check(self.db, W, [calc], NOW, "10001")[0]
+            self.assertEqual(watch.check(self.db, W, [calc], NOW, "10001")[0], [])
+        quote.assert_called_once_with("calc", "10001")
+        self.assertEqual([(d["price"], d["shipping"]) for d in deals], [(260, 20)])
+
+    def test_unquotable_listing_is_remembered_but_kept_out_of_the_statistics(self) -> None:
+        seed(self.db, lambda d: 300)
+        pickup, ended, old = item("pickup", 250, None), item("ended", 250, None), item("old", 250, None, listed=NOW - 40 * DAY)
+        for it in (ended, old):
+            it["shippingOptions"] = [{"shippingCostType": "CALCULATED"}]
+        with mock.patch.object(watch, "shipping_quote", return_value=None) as quote:
+            self.assertEqual(watch.check(self.db, W, [pickup, ended, old], NOW, "10001")[0], [])
+            watch.check(self.db, W, [pickup, ended, old], NOW, "10001")
+        # Only the in-window calculated listing is looked up, and only once.
+        quote.assert_called_once_with("ended", "10001")
+        # All three recorded with no price; had a NULL reached the statistics,
+        # the second check above would have crashed computing a median.
+        self.assertEqual(self.db.execute("SELECT count(*) FROM listing WHERE item_id IN ('pickup', 'ended', 'old') AND price IS NULL").fetchone()[0], 3)
+
+    def test_titles_must_match_the_model(self) -> None:
+        # Real titles eBay returned for "rx 6800" in the graphics card category
+        seed(self.db, lambda d: 300)
+        titles = ["ASUS PRIME GeForce RTX 5080 OC Edition 16GB GDDR7 PCIe 5.0 GPU", "GIGABYTE Radeon RX 9070 XT Gaming OC 16G", "ASUS TUF-RX6800XT-016G-GAMING", "XFX Speedster MERC 319 Radeon RX 6800 XT 16GB", "ASRock Radeon RX 6800  Phantom Gaming 16GB GDDR6 Graphics Card"]
+        deals = self.deals([item(f"t{i}", 250, title=t) for i, t in enumerate(titles)], match=r"6800(?!\s*-?xt)")
+        self.assertEqual([d["title"] for d in deals], [titles[4]])
+
+    def test_workstation_card_is_not_an_rx_6800(self) -> None:
+        seed(self.db, lambda d: 300)
+        titles = ["AMD Radeon Pro W6800 32GB GDDR6 Workstation Graphics Card", "MSI RADEON RX6800 GAMING X TRIO 16"]
+        deals = self.deals([item(f"t{i}", 250, title=t) for i, t in enumerate(titles)], match=r"(?<!w)6800(?!\s*-?xt)")
+        self.assertEqual([d["title"] for d in deals], [titles[1]])
+
+    def test_for_parts_condition_is_ignored(self) -> None:
+        seed(self.db, lambda d: 300)
+        broken = item("broken", 150)
+        broken["conditionId"] = "7000"
+        self.assertEqual(self.deals([broken]), [])
 
     def test_new_and_poorly_rated_sellers_are_ignored(self) -> None:
         seed(self.db, lambda d: 300)
@@ -193,14 +239,14 @@ class PushTest(unittest.TestCase):
 
 class PollTest(unittest.TestCase):
     def test_new_watch_pages_back_until_the_window_is_covered(self) -> None:
-        # 200 listings a page, pages a week apart: the third reaches 15 days
-        # back, past the 14-day window, so paging stops there and its
+        # 200 listings a page, pages ten days apart: the fourth reaches 31
+        # days back, past the 30-day window, so paging stops there and its
         # listings don't count towards the history.
-        pages = [[item(f"p{p}-{i}", 300, listed=NOW - (p * 7 + 1) * DAY + i) for i in range(200)] for p in range(4)]
+        pages = [[item(f"p{p}-{i}", 300, listed=NOW - (p * 10 + 1) * DAY + i) for i in range(200)] for p in range(5)]
         with mock.patch.object(watch.time, "time", return_value=NOW), mock.patch.object(watch, "search", side_effect=pages) as search, mock.patch.object(watch, "push") as push:
             self.assertEqual(watch.poll(new_db(), {"zip": "10001", "watch": [W]}), [])
-        self.assertEqual([c.args[2] for c in search.call_args_list[1:]], [200, 400])
-        self.assertIn("400 listings", push.call_args.args[1])
+        self.assertEqual([c.args[2] for c in search.call_args_list[1:]], [200, 400, 600])
+        self.assertIn("600 listings", push.call_args.args[1])
 
     def test_seeding_happens_once_even_if_nothing_was_recorded_or_announced(self) -> None:
         # Every listing filtered out, and the "Watching" push fails: the
