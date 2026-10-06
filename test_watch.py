@@ -11,6 +11,7 @@ from typing import Callable
 from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
+import dashboard  # noqa: E402
 import watch  # noqa: E402
 
 DAY = watch.DAY
@@ -38,7 +39,7 @@ def seed(db: sqlite3.Connection, level: Callable[[int], float], days: int = 14) 
     db.execute("INSERT INTO seeded VALUES ('gpu')")
     for d in range(days):
         for i in range(10):
-            db.execute("INSERT INTO listing VALUES ('gpu', ?, ?, ?)", (f"h{d}-{i}", level(d) + 2 * i - 9, NOW - d * DAY - 3600 * (i + 1)))
+            db.execute("INSERT INTO listing (watch, item_id, price, listed_at) VALUES ('gpu', ?, ?, ?)", (f"h{d}-{i}", level(d) + 2 * i - 9, NOW - d * DAY - 3600 * (i + 1)))
     db.commit()
 
 
@@ -64,9 +65,16 @@ class DeliveredTest(unittest.TestCase):
 
 
 class MarketTest(unittest.TestCase):
-    def test_junk_listings_barely_move_the_spread(self) -> None:
-        sample = list(range(100, 121))
-        self.assertLess(watch.spread(sample + [1, 9999]) - watch.spread(sample), 2)
+    def test_overpriced_listings_do_not_widen_the_spread(self) -> None:
+        # Imports listed at two to three times the going rate linger unsold;
+        # they must not push the alert bar down.
+        db = new_db()
+        seed(db, lambda d: 300)
+        before = watch.market(history(db), NOW, 15, 7)
+        for i in range(20):
+            db.execute("INSERT INTO listing (watch, item_id, price, listed_at) VALUES ('gpu', ?, ?, ?)", (f"import{i}", 600 + 15 * i, NOW - i * DAY - 99))
+        after = watch.market(history(db), NOW, 15, 7)
+        self.assertAlmostEqual(after["spread"], before["spread"], delta=1.5)
 
     def test_none_until_enough_listings_and_days(self) -> None:
         def h(n: int, days: int) -> list[tuple[float, float]]:
@@ -284,3 +292,29 @@ class PollTest(unittest.TestCase):
             self.assertEqual(watch.poll(db, config), [])
             self.assertEqual(watch.poll(db, config), [])
         self.assertEqual([c.args[0] for c in push.call_args_list], ["gpu: $250.00 delivered", "gpu: $250.00 delivered"])
+        self.assertEqual(db.execute("SELECT alerted, title, url FROM listing WHERE item_id = 'new'").fetchone(), (1, "Sapphire Pulse RX 6800 16GB", "https://www.ebay.com/itm/new"))
+
+
+class DashboardTest(unittest.TestCase):
+    def test_renders_a_ready_watch_with_its_bar_and_alerted_listing(self) -> None:
+        db = new_db()
+        seed(db, lambda d: 300)
+        db.execute("INSERT INTO listing VALUES ('gpu', 'deal', 250, ?, '<b>RX 6800</b> steal', 'https://www.ebay.com/itm/deal', 0, 'bob 900 (99.9%)', 1)", (NOW - 3600,))
+        data = watch.dashboard_data(db, {"watch": [W]}, NOW)
+        self.assertEqual(len(data[0]["bar_line"]), 31)
+        self.assertAlmostEqual(data[0]["bar_line"][-1][1], watch.bar(data[0]["market"], -2.0), places=6)
+        page = dashboard.render(data, {"last_poll": NOW - 30, "errors": []}, NOW)
+        self.assertIn("Alerts on", page)
+        self.assertIn("Alerted</span>", page)
+        self.assertIn("&lt;b&gt;RX 6800&lt;/b&gt; steal", page)
+        self.assertNotIn("<b>RX 6800</b>", page)
+        self.assertIn("Last checked 30 s ago", page)
+
+    def test_renders_a_warming_up_watch_and_a_failing_poll(self) -> None:
+        db = new_db()
+        seed(db, lambda d: 300, days=3)
+        page = dashboard.render(watch.dashboard_data(db, {"watch": [W, {**W, "name": "empty"}]}, NOW), {"last_poll": NOW - 120, "errors": ["gpu: HTTP Error 401"]}, NOW)
+        # 30 listings is enough; only the days are short, so only they show.
+        self.assertIn("Warming up: 3 of 7 days</span>", page)
+        self.assertIn("No priced listings yet.", page)
+        self.assertIn("failed: gpu: HTTP Error 401", page)

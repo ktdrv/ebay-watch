@@ -9,12 +9,15 @@ Standard library only, so it runs on a stock python image with nothing to build.
 
 import base64
 import collections
+import contextlib
+import http.server
 import json
 import logging
 import os
 import re
 import sqlite3
 import statistics
+import threading
 import time
 import tomllib
 import urllib.error
@@ -22,6 +25,8 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 from pathlib import Path
+
+import dashboard
 
 EBAY = "https://api.ebay.com"
 # Alert once every poll has failed for this long, so an eBay hiccup doesn't
@@ -43,10 +48,18 @@ SEED_LIMIT = 1000
 # seeded marks a watch as past its first poll. It is separate from listing so a
 # watch whose first poll recorded nothing (all filtered out) isn't treated as
 # new again, re-seeding at 5 API calls a minute.
+#
+# title, url, shipping and seller are only for the dashboard. alerted marks
+# the listings that were pushed.
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS listing (watch TEXT, item_id TEXT, price REAL, listed_at REAL, PRIMARY KEY (watch, item_id));
+CREATE TABLE IF NOT EXISTS listing (
+    watch TEXT, item_id TEXT, price REAL, listed_at REAL,
+    title TEXT, url TEXT, shipping REAL, seller TEXT, alerted INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (watch, item_id)
+);
 CREATE TABLE IF NOT EXISTS seeded (watch TEXT PRIMARY KEY);
 """
+DASHBOARD_PORT = 8091
 
 QUOTE_ATTEMPTS = 3
 
@@ -55,6 +68,8 @@ _token = {"value": "", "expires": 0.0}
 # Failed shipping lookups per listing. In memory: a restart just allows a few
 # more retries.
 _quote_failures: collections.Counter = collections.Counter()
+# Last poll's time and errors, for the dashboard.
+_status: dict = {"last_poll": None, "errors": []}
 
 
 def env(name: str) -> str:
@@ -125,13 +140,6 @@ def delivered(item: dict) -> tuple[float, float] | None:
     return float(item["price"]["value"]) + min(costs), min(costs)
 
 
-def spread(xs: list[float]) -> float:
-    """MAD scaled to match a standard deviation. Unlike stdev, a few $1 "box
-    only" or $5000 bundle listings barely move it."""
-    m = statistics.median(xs)
-    return 1.4826 * statistics.median(abs(x - m) for x in xs)
-
-
 def listed_at(item: dict, default: float) -> float:
     # A malformed date falls back like a missing one rather than raising,
     # which would fail the whole poll every minute until the listing aged out.
@@ -149,7 +157,12 @@ def market(history: list[tuple[float, float]], now: float, min_listings: int, mi
     median slope over every pair of listings, which shrugs off up to ~29% odd
     listings where least squares would follow them. It is fitted to listings
     rather than daily medians because these cards list about once a day.
-    spread is the scatter around that line, so a steep trend doesn't inflate it.
+
+    spread is how far below that line listings typically sit, scaled to match a
+    standard deviation. Measured around the line, so a steep trend doesn't
+    widen it, and on the cheap side only: overpriced listings (imports at twice
+    the going rate) linger unsold and would otherwise widen it until the alert
+    bar sat below anything that ever lists.
     """
     if len(history) < min_listings or len({int((now - t) // DAY) for t, _ in history}) < min_days:
         return None
@@ -159,10 +172,27 @@ def market(history: list[tuple[float, float]], now: float, min_listings: int, mi
     expected = statistics.median(y - slope * x for x, y in points)
     level = statistics.median(p for _, p in history)
     residuals = [y - (expected + slope * x) for x, y in points]
+    center = statistics.median(residuals)
+    below = [center - r for r in residuals if r < center]
     # Floored at 2% of the price: when most listings share one price (a
     # refurbisher's stock), the scatter is ~0 and any small undercut would
     # look like a huge outlier.
-    return {"level": level, "expected": expected, "spread": max(spread(residuals), 0.02 * level), "per_week": slope * 7}
+    cheap_side = 1.4826 * statistics.median(below) if below else 0.0
+    return {"level": level, "expected": expected, "slope": slope, "spread": max(cheap_side, 0.02 * level), "per_week": slope * 7}
+
+
+def bar(m: dict, max_z: float, days_from_now: float = 0.0) -> float:
+    """The delivered price at or under which a listing alerts: max_z spreads
+    under the lower of the median and the trend. In a falling market that's
+    the trend, so riding the slope down isn't a deal; in a rising one it's the
+    median, so lagging the climb isn't either."""
+    return min(m["level"], m["expected"] + m["slope"] * days_from_now) + max_z * m["spread"]
+
+
+def readiness(watch: dict) -> tuple[int, int]:
+    """(min_listings, min_days) before a watch alerts. A trend needs at least
+    two days to have a slope."""
+    return watch.get("min_listings", 15), max(2, watch.get("min_days", 7))
 
 
 def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zip_code: str = "") -> tuple[list[dict], dict | None]:
@@ -175,12 +205,10 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
     name = watch["name"]
     first_poll = db.execute("INSERT OR IGNORE INTO seeded VALUES (?)", (name,)).rowcount == 1
     cutoff = now - watch.get("history_days", 30) * DAY
-    # A trend needs at least two days to have a slope.
-    min_days = max(2, watch.get("min_days", 7))
-    min_listings = watch.get("min_listings", 15)
+    min_listings, min_days = readiness(watch)
     history = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL", (name, cutoff)).fetchall()
     m = market(history, now, min_listings, min_days)
-    max_z = watch.get("max_z", -2.5)
+    max_z = watch.get("max_z", -2.0)
     exclude = [w.lower() for w in watch.get("exclude", [])]
 
     deals = []
@@ -236,17 +264,17 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
             d = None if cost is None else (float(item["price"]["value"]) + cost, cost)
         # Recorded either way, so nothing is looked up twice. A NULL price (no
         # quote: pickup only, freight, ended) stays out of the statistics.
-        db.execute("INSERT INTO listing VALUES (?, ?, ?, ?)", (name, item["itemId"], d and d[0], t))
+        seller_text = f"{seller.get('username', '?')} {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"
+        db.execute(
+            "INSERT INTO listing (watch, item_id, price, listed_at, title, url, shipping, seller) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, item["itemId"], d and d[0], t, title, item.get("itemWebUrl"), d and d[1], seller_text),
+        )
         if d is None or first_poll or m is None:
             continue
         price, shipping = d
-        # Measured from the lower of today's trend price and the recent
-        # median: in a falling market that's the trend, so riding the slope
-        # down isn't a deal; in a rising one it's the median, so lagging the
-        # climb isn't either.
-        z = (price - min(m["level"], m["expected"])) / m["spread"]
-        if z <= max_z:
-            deals.append({**m, "title": title, "price": price, "shipping": shipping, "z": z, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
+        if price <= bar(m, max_z):
+            z = (price - min(m["level"], m["expected"])) / m["spread"]
+            deals.append({**m, "item_id": item["itemId"], "title": title, "price": price, "shipping": shipping, "z": z, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
     baseline = None
     if first_poll:
         recorded = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL", (name, cutoff)).fetchall()
@@ -316,6 +344,7 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str]:
                 except Exception:
                     log.exception("could not announce %s", watch["name"])
             push_deals(watch, deals)
+            db.executemany("UPDATE listing SET alerted = 1 WHERE watch = ? AND item_id = ?", [(watch["name"], d["item_id"]) for d in deals])
             # Only now are this poll's listings "seen". Committing before the
             # pushes would lose a deal for good whenever ntfy is unreachable.
             db.commit()
@@ -330,11 +359,70 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str]:
     return errors
 
 
+def dashboard_data(db: sqlite3.Connection, config: dict, now: float) -> list[dict]:
+    """Per watch: its market, alert bar and priced listings in the window,
+    newest first, in the plain numbers dashboard.render() draws."""
+    out = []
+    for watch in config.get("watch", []):
+        days = watch.get("history_days", 30)
+        max_z = watch.get("max_z", -2.0)
+        rows = db.execute(
+            "SELECT listed_at, price, shipping, title, url, seller, alerted FROM listing"
+            " WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL ORDER BY listed_at DESC",
+            (watch["name"], now - days * DAY),
+        ).fetchall()
+        m = market([(r[0], r[1]) for r in rows], now, *readiness(watch))
+        listings = []
+        for t, price, shipping, title, url, seller, alerted in rows:
+            x = (t - now) / DAY
+            z = (price - min(m["level"], m["expected"] + m["slope"] * x)) / m["spread"] if m else None
+            listings.append({"days_ago": -x, "price": price, "shipping": shipping, "title": title, "url": url, "seller": seller, "alerted": bool(alerted), "z": z})
+        out.append({
+            "name": watch["name"], "query": watch["query"], "days": days, "max_z": max_z, "needs": readiness(watch), "market": m, "listings": listings,
+            # Lines as (days ago, price) points; the bar kinks where the trend crosses the median.
+            "bar_line": [(-x, bar(m, max_z, x)) for x in range(-days, 1)] if m else [],
+            "trend_line": [(days, m["expected"] - m["slope"] * days), (0, m["expected"])] if m else [],
+        })
+    return out
+
+
+def serve_dashboard(db_path: str, config_path: Path) -> None:
+    """Serve the dashboard from a background thread, reading the database
+    read-only so a page view can never interfere with a poll."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            if urllib.parse.urlsplit(self.path).path != "/":
+                self.send_error(404)
+                return
+            try:
+                with contextlib.closing(sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)) as db:
+                    now = time.time()
+                    body = dashboard.render(dashboard_data(db, tomllib.loads(config_path.read_text()), now), _status, now).encode()
+            except Exception:
+                log.exception("dashboard failed")
+                self.send_error(500)
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass  # a line per page view would drown the poll log
+
+    server = http.server.ThreadingHTTPServer(("", DASHBOARD_PORT), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+
+
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     config_path = Path(os.environ.get("WATCHES", "/app/watches.toml"))
-    db = sqlite3.connect(os.environ.get("DB", "/data/listings.db"))
+    db_path = os.environ.get("DB", "/data/listings.db")
+    db = sqlite3.connect(db_path)
     db.executescript(SCHEMA)
+    serve_dashboard(db_path, config_path)
     failing_since = None
     alerted = False
     while True:
@@ -347,6 +435,7 @@ def main() -> None:
         except Exception as e:
             log.exception("poll failed")
             errors = [str(e)]
+        _status.update(last_poll=time.time(), errors=errors)
         if not errors:
             failing_since, alerted = None, False
         elif failing_since is None:

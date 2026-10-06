@@ -24,12 +24,14 @@ zip = "10001"
 #   match         regex the title must contain (case-insensitive), so only the
 #                 model you mean reaches the statistics. Use a single-quoted
 #                 TOML string so backslashes stay literal.
-#   max_z         default -2.5. Spreads are robust (median absolute deviation)
-#                 standard deviations, so -2.5 means roughly the cheapest 0.6%.
-#                 Raise towards -2 for more alerts. For a watch's first
-#                 history_days its history is seeded from listings still up,
-#                 which lack the cheap ones that sold fast; that understates
-#                 the spread, so expect it to be a little chattier until then.
+#   max_z         default -2. The spread is how far listings below the going
+#                 rate typically sit, scaled like a standard deviation (the
+#                 overpriced side is ignored, or lingering imports would widen
+#                 it). For the RX 6700 XT on 2026-10-06, -2 meant $278 against
+#                 a $358 going rate and a 30-day cheapest of $315; -1.5 meant
+#                 $298. The dashboard draws the bar, so tune against that. For
+#                 a watch's first history_days its history is seeded from
+#                 listings still up, which lack the cheap ones that sold fast.
 #   history_days  default 30. The window for both the median and the trend.
 #                 These cards list about once a day, so a shorter window
 #                 leaves too few listings to fit a trend.
@@ -73,7 +75,7 @@ query = "rx 6700 xt"
 # Not the 6750 XT or the non-XT 6700
 match = '6700\s*-?xt'
 category_ids = [27386]
-max_z = -2.5
+max_z = -2.0
 min_seller_feedback = 10
 min_seller_percent = 97
 min_price = 100
@@ -86,7 +88,7 @@ query = "rx 6800"
 # Not the Radeon Pro W6800 workstation card either.
 match = '(?<!w)6800(?!\s*-?xt)'
 category_ids = [27386]
-max_z = -2.5
+max_z = -2.0
 min_seller_feedback = 10
 min_seller_percent = 97
 min_price = 140
@@ -97,7 +99,7 @@ name = "RX 6800 XT"
 query = "rx 6800 xt"
 match = '(?<!w)6800\s*-?xt'
 category_ids = [27386]
-max_z = -2.5
+max_z = -2.0
 min_seller_feedback = 10
 min_seller_percent = 97
 min_price = 170
