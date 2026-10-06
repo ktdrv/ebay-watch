@@ -1,12 +1,14 @@
-# eBay watches. Re-read on every poll, so `task deploy -- ebay-watch` is all
-# an edit needs. Each poll is one API call per watch, and the default Browse
-# API quota is 5,000 calls a day: watches x 1440 / interval_minutes must stay
-# under it. At 1 minute that is 3 watches (4,320 calls); a 4th needs
-# interval_minutes = 2 or a quota raise via eBay's Application Growth Check.
-# Past the quota, every poll fails until midnight Pacific.
+# eBay watches. Re-read every 30 seconds, so `task deploy -- ebay-watch` is all
+# an edit needs. Each check is one API call, plus one per new listing with
+# calculated shipping, and the default Browse API quota is 5,000 calls a day.
+# The sum of 1440 / interval_minutes over all watches must stay well under it:
+# here 3 x 960 (CPUs, 1.5 min) + 3 x 96 (GPUs, 15 min) = 3,168, leaving room
+# for shipping lookups and a new watch's first-check seeding (~5 calls).
+# Past the quota, every check fails until midnight Pacific.
 
-interval_minutes = 1
-# Shipping is quoted to this ZIP. Without it eBay omits calculated shipping.
+# Default check interval; a watch's own interval_minutes overrides it.
+interval_minutes = 10
+# Shipping is quoted to this ZIP.
 zip = "10001"
 
 # A new listing alerts when its delivered price (item + cheapest shipping) is
@@ -19,6 +21,9 @@ zip = "10001"
 #
 #   name          shown in alerts. Price history is keyed by it, so rename the
 #                 watch when you change its query, or the old history skews it.
+#   interval_minutes  how often to check this watch (fractions allowed).
+#                 Deals go fast, so the watches you care about most get the
+#                 short intervals; see the quota sum above.
 #   query         eBay keyword search. It is loose: "rx 6800" in the graphics
 #                 card category also returns RTX 5080s and RX 9070s.
 #   match         regex the title must contain (case-insensitive), so only the
@@ -61,6 +66,56 @@ zip = "10001"
 # listed (up to 1,000 listings, a few extra API calls once) and alerts on
 # nothing; you get one "Watching ..." push saying whether alerts are on yet.
 
+# CPUs: the main focus, checked every 1.5 minutes. Restricted to eBay's
+# CPUs/Processors category (164): without it most results are gaming PCs
+# that mention the chip. Each title pattern keeps the X3D, non-X and
+# RX 5600/5700 XT graphics cards out of the wrong watch. Item prices on
+# 2026-10-06 (US listings): 5600X ~$150, 5700X ~$187, 5700X3D ~$322; min_price
+# sits well under those to drop empty boxes and coolers.
+
+[[watch]]
+name = "Ryzen 5 5600X"
+query = "ryzen 5600x"
+# Not new: sealed stock is listed at collector prices ($250-500 for a 5600X
+# that sells used for ~$140), a separate market that would wreck the stats.
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+match = '5600\s*-?x(?!\s*-?(3d|t))'
+category_ids = [164]
+interval_minutes = 1.5
+max_z = -2.0
+min_price = 60
+exclude = ["x3d", "lot of", "bundle", "combo", "motherboard", "bent", "for parts", "parts only", "not working", "untested", "as is", "as-is", "box only", "empty box", "read desc", "no cpu"]
+
+[[watch]]
+name = "Ryzen 7 5700X"
+query = "ryzen 5700x"
+# Not new: sealed stock is listed at collector prices ($250-500 for a 5600X
+# that sells used for ~$140), a separate market that would wreck the stats.
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+match = '5700\s*-?x(?!\s*-?(3d|t))'
+category_ids = [164]
+interval_minutes = 1.5
+max_z = -2.0
+min_price = 70
+exclude = ["x3d", "lot of", "bundle", "combo", "motherboard", "bent", "for parts", "parts only", "not working", "untested", "as is", "as-is", "box only", "empty box", "read desc", "no cpu"]
+
+[[watch]]
+name = "Ryzen 7 5700X3D"
+query = "ryzen 5700x3d"
+# Not new: sealed stock is listed at collector prices ($250-500 for a 5600X
+# that sells used for ~$140), a separate market that would wreck the stats.
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+match = '5700\s*-?x\s*-?3d'
+category_ids = [164]
+interval_minutes = 1.5
+max_z = -2.0
+min_price = 120
+exclude = ["lot of", "bundle", "combo", "motherboard", "bent", "for parts", "parts only", "not working", "untested", "as is", "as-is", "box only", "empty box", "read desc", "no cpu"]
+
+# GPUs: one already bought, so these mostly keep collecting history; checked
+# every 15 minutes, which still catches every listing since a check sees the
+# newest 200.
+#
 # One watch per GPU model: a listing is compared against its own model's
 # prices, so mixing a 6700 XT into the 6800 XT history would make every
 # 6700 XT look like a deal. All three are restricted to eBay's Graphics/Video
@@ -74,6 +129,7 @@ query = "rx 6700 xt"
 # Not the 6750 XT or the non-XT 6700
 match = '6700\s*-?xt'
 category_ids = [27386]
+interval_minutes = 15
 max_z = -2.0
 min_price = 100
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
@@ -85,6 +141,7 @@ query = "rx 6800"
 # Not the Radeon Pro W6800 workstation card either.
 match = '(?<!w)6800(?!\s*-?xt)'
 category_ids = [27386]
+interval_minutes = 15
 max_z = -2.0
 min_price = 140
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
@@ -94,6 +151,7 @@ name = "RX 6800 XT"
 query = "rx 6800 xt"
 match = '(?<!w)6800\s*-?xt'
 category_ids = [27386]
+interval_minutes = 15
 max_z = -2.0
 min_price = 170
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]

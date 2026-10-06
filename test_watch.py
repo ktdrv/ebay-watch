@@ -276,6 +276,27 @@ class PushTest(unittest.TestCase):
 
 
 class PollTest(unittest.TestCase):
+    def setUp(self) -> None:
+        # Each test starts with no watch checked yet. Tests that check twice
+        # at the same frozen time clear it in between, standing in for the
+        # watch's interval passing.
+        patcher = mock.patch.dict(watch._last_polled, clear=True)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_each_watch_is_checked_at_its_own_interval(self) -> None:
+        clock = [NOW]
+        config = {"zip": "10001", "interval_minutes": 10, "watch": [{**W, "name": "cpu", "interval_minutes": 1.5}, {**W, "name": "gpu", "interval_minutes": 15}, {**W, "name": "default"}]}
+        db = new_db()
+        checked = []
+        with mock.patch.object(watch.time, "time", side_effect=lambda: clock[0]), mock.patch.object(watch, "search", side_effect=lambda w, *a: checked.append(w["name"]) or []), mock.patch.object(watch, "push"):
+            for minute in (0, 0.5, 1, 1.5, 3, 10, 15):
+                clock[0] = NOW + minute * 60
+                result = watch.poll(db, config)
+                if minute == 0.5:
+                    self.assertIsNone(result)  # nothing due
+        self.assertEqual(checked, ["cpu", "gpu", "default", "cpu", "cpu", "cpu", "default", "cpu", "gpu"])
+
     def test_new_watch_pages_back_until_the_window_is_covered(self) -> None:
         # 200 listings a page, pages ten days apart: the fourth reaches 31
         # days back, past the 30-day window, so paging stops there and its
@@ -294,6 +315,7 @@ class PollTest(unittest.TestCase):
         with mock.patch.object(watch.time, "time", return_value=NOW), mock.patch.object(watch, "search", side_effect=lambda *a: list(page)) as search, mock.patch.object(watch, "push", side_effect=OSError("ntfy down")):
             watch.poll(db, {"zip": "10001", "watch": [W]})
             self.assertEqual(search.call_count, 5)
+            watch._last_polled.clear()
             watch.poll(db, {"zip": "10001", "watch": [W]})
             self.assertEqual(search.call_count, 6)
 
@@ -305,7 +327,9 @@ class PollTest(unittest.TestCase):
             push.side_effect = OSError("ntfy down")
             self.assertEqual(len(watch.poll(db, config)), 1)
             push.side_effect = None
+            watch._last_polled.clear()
             self.assertEqual(watch.poll(db, config), [])
+            watch._last_polled.clear()
             self.assertEqual(watch.poll(db, config), [])
         self.assertEqual([c.args[0] for c in push.call_args_list], ["gpu: $250.00 delivered", "gpu: $250.00 delivered"])
         self.assertEqual(db.execute("SELECT alerted, title, url FROM listing WHERE item_id = 'new'").fetchone(), (1, "Sapphire Pulse RX 6800 16GB", "https://www.ebay.com/itm/new"))

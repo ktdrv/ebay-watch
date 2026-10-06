@@ -70,6 +70,10 @@ _token = {"value": "", "expires": 0.0}
 _quote_failures: collections.Counter = collections.Counter()
 # Last poll's time and errors, for the dashboard.
 _status: dict = {"last_poll": None, "errors": []}
+# When each watch was last checked. In memory: a restart checks them all once.
+_last_polled: dict[str, float] = {}
+# How often the main loop wakes to see which watches are due.
+TICK = 30
 
 
 def env(name: str) -> str:
@@ -324,10 +328,20 @@ def push_deals(watch: dict, deals: list[dict]) -> None:
         push(f"{watch['name']}: {len(rest)} more deals", f"From ${rest[0]['price']:.2f} to ${rest[-1]['price']:.2f} delivered.", click=f"https://www.ebay.com/sch/i.html?{urllib.parse.urlencode({'_nkw': watch['query'], '_sop': 10})}")
 
 
-def poll(db: sqlite3.Connection, config: dict) -> list[str]:
-    """One pass over every watch. Returns the errors, one per failed watch."""
-    errors = []
+def poll(db: sqlite3.Connection, config: dict) -> list[str] | None:
+    """Check every watch that is due. Returns the errors, one per failed
+    watch, or None when no watch was due."""
+    errors, polled = [], False
+    now = time.time()
     for watch in config.get("watch", []):
+        every = watch.get("interval_minutes", config.get("interval_minutes", 10)) * 60
+        # A few seconds' slack so a watch due at the next tick isn't pushed a whole tick late.
+        if now - _last_polled.get(watch["name"], 0) < every - 5:
+            continue
+        # Set before trying, so a failing watch is retried at its own pace
+        # rather than every tick, which would eat the shared API quota.
+        _last_polled[watch["name"]] = now
+        polled = True
         try:
             items = search(watch, str(config["zip"]))
             if db.execute("SELECT 1 FROM seeded WHERE watch = ?", (watch["name"],)).fetchone() is None:
@@ -361,7 +375,7 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str]:
             db.rollback()
             log.exception("%s failed", watch.get("name"))
             errors.append(f"{watch.get('name')}: {e}")
-    return errors
+    return errors if polled else None
 
 
 def dashboard_data(db: sqlite3.Connection, config: dict, now: float) -> list[dict]:
@@ -436,15 +450,15 @@ def main() -> None:
     failing_since = None
     alerted = False
     while True:
-        interval = 10
         try:
-            # Re-read every poll so editing watches.toml needs no restart.
-            config = tomllib.loads(config_path.read_text())
-            interval = config.get("interval_minutes", interval)
-            errors = poll(db, config)
+            # Re-read every tick so editing watches.toml needs no restart.
+            errors = poll(db, tomllib.loads(config_path.read_text()))
         except Exception as e:
             log.exception("poll failed")
             errors = [str(e)]
+        if errors is None:  # nothing was due
+            time.sleep(TICK)
+            continue
         _status.update(last_poll=time.time(), errors=errors)
         if not errors:
             failing_since, alerted = None, False
@@ -456,7 +470,7 @@ def main() -> None:
                 alerted = True
             except Exception:
                 log.exception("could not push the failure alert")
-        time.sleep(interval * 60)
+        time.sleep(TICK)
 
 
 if __name__ == "__main__":
