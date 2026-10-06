@@ -45,10 +45,6 @@ zip = "10001"
 #                 accessory listings, which would otherwise look like the best
 #                 deals of all.
 #   exclude       ignore titles containing any of these (case-insensitive)
-#   min_seller_feedback, min_seller_percent
-#                 ignore sellers below this feedback count / positive %.
-#                 Cuts scams, at the cost of the occasional real deal from a
-#                 private seller with a fresh account.
 #   condition_ids e.g. [1000] new, [3000] used, [1000, 1500, 2500, 3000] new
 #                 through used. Full list: https://developer.ebay.com/api-docs/sell/static/metadata/condition-id-values.html
 #   category_ids  restrict to eBay categories (the number in a category URL)
@@ -79,8 +75,6 @@ query = "rx 6700 xt"
 match = '6700\s*-?xt'
 category_ids = [27386]
 max_z = -2.0
-min_seller_feedback = 10
-min_seller_percent = 97
 min_price = 100
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
 
@@ -92,8 +86,6 @@ query = "rx 6800"
 match = '(?<!w)6800(?!\s*-?xt)'
 category_ids = [27386]
 max_z = -2.0
-min_seller_feedback = 10
-min_seller_percent = 97
 min_price = 140
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
 
@@ -103,7 +95,5 @@ query = "rx 6800 xt"
 match = '(?<!w)6800\s*-?xt'
 category_ids = [27386]
 max_z = -2.0
-min_seller_feedback = 10
-min_seller_percent = 97
 min_price = 170
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]

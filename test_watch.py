@@ -243,14 +243,12 @@ class CheckTest(unittest.TestCase):
         broken["conditionId"] = "7000"
         self.assertEqual(self.deals([broken]), [])
 
-    def test_new_and_poorly_rated_sellers_are_ignored(self) -> None:
+    def test_new_sellers_still_alert(self) -> None:
+        # People make an account, or revive an old one, just to sell a card.
         seed(self.db, lambda d: 300)
-        fresh, shady, good = item("fresh", 250), item("shady", 250), item("good", 250)
-        fresh["seller"] = {"feedbackScore": 2, "feedbackPercentage": "100.0"}
-        shady["seller"] = {"feedbackScore": 900, "feedbackPercentage": "91.2"}
-        good["seller"] = {"feedbackScore": 900, "feedbackPercentage": "99.6"}
-        deals = self.deals([fresh, shady, good], min_seller_feedback=10, min_seller_percent=97)
-        self.assertEqual([(d["url"], d["seller"]) for d in deals], [("https://www.ebay.com/itm/good", "seller 900 (99.6%)")])
+        fresh = item("fresh", 250)
+        fresh["seller"] = {"username": "fraben-7365", "feedbackScore": 6, "feedbackPercentage": "100.0"}
+        self.assertEqual([d["seller"] for d in self.deals([fresh])], ["seller 6 (100.0%)"])
 
 
 class PushTest(unittest.TestCase):

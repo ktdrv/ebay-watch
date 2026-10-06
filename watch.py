@@ -238,11 +238,9 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
         # only there, not in the title, so the exclude list misses them.
         if item.get("conditionId") == "7000":
             continue
-        # Too-good prices from new or poorly rated sellers are the classic
-        # scam, and exactly what a low z-score flags.
+        # No seller-feedback filter on purpose: plenty of people make an account,
+        # or dust off an old one, just to sell their card.
         seller = item.get("seller", {})
-        if int(seller.get("feedbackScore", 0)) < watch.get("min_seller_feedback", 0) or float(seller.get("feedbackPercentage", 0)) < watch.get("min_seller_percent", 0):
-            continue
         # On the item price, so junk is dropped before any shipping lookup.
         if float(item["price"]["value"]) < watch.get("min_price", 0):
             continue
