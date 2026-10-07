@@ -233,12 +233,14 @@ class CheckTest(unittest.TestCase):
         deals = self.deals([item(f"t{i}", 250, title=t) for i, t in enumerate(titles)], match=r"6800(?!\s*-?xt)")
         self.assertEqual([d["title"] for d in deals], [titles[4]])
 
-    def test_cpu_patterns_from_watches_toml(self) -> None:
+    def test_title_patterns_from_watches_toml(self) -> None:
         patterns = {w["name"]: w["match"] for w in tomllib.loads((Path(__file__).parent / "watches.toml").read_text())["watch"]}
         cases = {
-            "Ryzen 5 5600X": (["AMD Ryzen 5 5600X 6-Core", "AMD RYZEN 5 5600X Tray", "Ryzen 5 5600x tested working", "R5 5600-X"], ["AMD Ryzen 5 5600X3D", "Ryzen 5 5600X 3D", "XFX RX 5600 XT 6GB", "RX 5600XT", "Ryzen 5 5600 6-Core", "Ryzen 5 5600G"]),
-            "Ryzen 7 5700X": (["AMD Ryzen 7 5700X 8-Core", "Ryzen 7 5700X Thermal paste included", "5700X Tested"], ["R7 5700X3D", "Ryzen 7 5700X 3D", "RX 5700 XT 8GB", "Ryzen 7 5700G"]),
-            "Ryzen 7 5700X3D": (["AMD Ryzen 7 5700X3D", "Ryzen 7 5700X 3D", "R7 5700x3d tray"], ["Ryzen 7 5700X 8-Core", "Ryzen 7 5800X3D"]),
+            "RTX 3090": (["EVGA GeForce RTX 3090 FTW3 ULTRA GAMING 24GB", "RTX3090 24GB Founders Edition", "MSI RTX 3090 Trio"], ["EVGA GeForce RTX 3090 Ti FTW3 ULTRA", "RTX 3090Ti 24GB", "ASUS ROG Strix GeForce RTX 4090 24GB"]),
+            "RTX 4070 Ti Super": (["ASUS TUF RTX 4070 Ti SUPER 16GB", "Gigabyte 4070TI Super Gaming OC", "RTX 4070 Ti-Super"], ["MSI RTX 4070 SUPER 12GB", "Zotac RTX 4070 Ti 12GB", "RTX 4070 12GB"]),
+            "RX 7900 XT": (["Sapphire Pulse RX 7900 XT 20GB", "XFX RX 7900XT Speedster", "RX 7900 XT Tested working"], ["Sapphire Nitro+ RX 7900 XTX 24GB", "RX 7900XTX", "PowerColor RX 7900 GRE", "AMD Radeon Pro W7900 48GB"]),
+            "RX 7900 GRE": (["PowerColor Hellhound RX 7900 GRE 16GB", "ASRock RX 7900GRE"], ["Sapphire RX 7900 XT 20GB", "RX 7900 XTX"]),
+            "RX 6900 XT": (["AMD Radeon RX 6900 XT Reference", "ASRock RX 6900XT Phantom Gaming", "RX 6900 XT Tested"], ["ASRock AMD Radeon RX 6950 XT OC Formula", "AMD Radeon Pro W6900X 32GB", "RX 6800 XT"]),
         }
         for name, (yes, no) in cases.items():
             for t in yes:

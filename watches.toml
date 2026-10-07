@@ -2,12 +2,12 @@
 # an edit needs. Each check is one API call, plus one per new listing with
 # calculated shipping, and the default Browse API quota is 5,000 calls a day.
 # The sum of 1440 / interval_minutes over all watches must stay well under it:
-# here 3 x 960 (CPUs, 1.5 min) + 3 x 96 (GPUs, 15 min) = 3,168, leaving room
-# for shipping lookups and a new watch's first-check seeding (~5 calls).
-# Past the quota, every check fails until midnight Pacific.
+# here 5 x 720 (every 2 min) = 3,600, leaving room for shipping lookups and a
+# new watch's first-check seeding (~5 calls). Past the quota, every check
+# fails until midnight Pacific.
 
 # Default check interval; a watch's own interval_minutes overrides it.
-interval_minutes = 10
+interval_minutes = 2
 # Shipping is quoted to this ZIP.
 zip = "10001"
 
@@ -38,7 +38,7 @@ zip = "10001"
 #                 a watch's first history_days its history is seeded from
 #                 listings still up, which lack the cheap ones that sold fast.
 #   history_days  default 30. The window for both the median and the trend.
-#                 These cards list about once a day, so a shorter window
+#                 GPUs list about once a day per model, so a shorter window
 #                 leaves too few listings to fit a trend.
 #   min_listings, min_days
 #                 default 15 and 7. No alerts until the window holds this many
@@ -46,9 +46,8 @@ zip = "10001"
 #                 its history from what is already listed, so this is often
 #                 met on the first poll.
 #   min_price     ignore anything with an item price (before shipping) under
-#                 this. Drops "box only", parts and
-#                 accessory listings, which would otherwise look like the best
-#                 deals of all.
+#                 this. Drops "box only", parts and accessory listings, which
+#                 would otherwise look like the best deals of all.
 #   exclude       ignore titles containing any of these (case-insensitive)
 #   condition_ids e.g. [1000] new, [3000] used, [1000, 1500, 2500, 3000] new
 #                 through used. Full list: https://developer.ebay.com/api-docs/sell/static/metadata/condition-id-values.html
@@ -62,99 +61,60 @@ zip = "10001"
 #
 # Search results never price calculated shipping, so each new listing that
 # uses it costs one extra API call to quote it to the ZIP. Listings eBay still
-# can't price (pickup only, freight) and multi-variation listings are ignored. The first poll of a new watch records what is already
-# listed (up to 1,000 listings, a few extra API calls once) and alerts on
-# nothing; you get one "Watching ..." push saying whether alerts are on yet.
+# can't price (pickup only, freight) and multi-variation listings are ignored.
+# The first poll of a new watch records what is already listed (up to 1,000
+# listings, a few extra API calls once) and alerts on nothing; you get one
+# "Watching ..." push saying whether alerts are on yet.
 
-# CPUs: the main focus, checked every 1.5 minutes. Restricted to eBay's
-# CPUs/Processors category (164): without it most results are gaming PCs
-# that mention the chip. Each title pattern keeps the X3D, non-X and
-# RX 5600/5700 XT graphics cards out of the wrong watch. Item prices on
-# 2026-10-06 (US listings): 5600X ~$150, 5700X ~$187, 5700X3D ~$322; min_price
-# sits well under those to drop empty boxes and coolers.
-
-[[watch]]
-name = "Ryzen 5 5600X"
-query = "ryzen 5600x"
-# Everything but sealed new (1000): sealed stock is listed at collector
-# prices ($250-500 for a 5600X that sells used for ~$140), a separate market
-# that would wreck the stats. 1500 is eBay's "New other", i.e. open box.
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-match = '5600\s*-?x(?!\s*-?(3d|t\b))'
-category_ids = [164]
-interval_minutes = 1.5
-max_z = -2.0
-min_price = 60
-exclude = ["x3d", "lot of", "bundle", "combo", "motherboard", "bent", "for parts", "parts only", "not working", "untested", "as is", "as-is", "box only", "empty box", "read desc", "no cpu"]
+# One watch per GPU model, all in eBay's Graphics/Video Cards category (27386),
+# which keeps out whole PCs. Each title pattern keeps the near-namesakes out:
+# 3090 Ti, 4070 Super / 4070 Ti, 7900 XTX, and the Radeon Pro W-series.
+# condition_ids is everything but sealed new (1000): new stock is a separate,
+# pricier market (on 2026-10-07 a 3090 was ~$2,456 new vs ~$1,638 used,
+# delivered) that would wreck the statistics. 1500 is eBay's "New other",
+# i.e. open box.
 
 [[watch]]
-name = "Ryzen 7 5700X"
-query = "ryzen 5700x"
-# Everything but sealed new (1000): sealed stock is listed at collector
-# prices ($250-500 for a 5600X that sells used for ~$140), a separate market
-# that would wreck the stats. 1500 is eBay's "New other", i.e. open box.
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-match = '5700\s*-?x(?!\s*-?(3d|t\b))'
-category_ids = [164]
-interval_minutes = 1.5
-max_z = -2.0
-min_price = 70
-exclude = ["x3d", "lot of", "bundle", "combo", "motherboard", "bent", "for parts", "parts only", "not working", "untested", "as is", "as-is", "box only", "empty box", "read desc", "no cpu"]
-
-[[watch]]
-name = "Ryzen 7 5700X3D"
-query = "ryzen 5700x3d"
-# Everything but sealed new (1000): sealed stock is listed at collector
-# prices ($250-500 for a 5600X that sells used for ~$140), a separate market
-# that would wreck the stats. 1500 is eBay's "New other", i.e. open box.
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-match = '5700\s*-?x\s*-?3d'
-category_ids = [164]
-interval_minutes = 1.5
-max_z = -2.0
-min_price = 120
-exclude = ["lot of", "bundle", "combo", "motherboard", "bent", "for parts", "parts only", "not working", "untested", "as is", "as-is", "box only", "empty box", "read desc", "no cpu"]
-
-# GPUs: one already bought, so these mostly keep collecting history; checked
-# every 15 minutes, which still catches every listing since a check sees the
-# newest 200.
-#
-# One watch per GPU model: a listing is compared against its own model's
-# prices, so mixing a 6700 XT into the 6800 XT history would make every
-# 6700 XT look like a deal. All three are restricted to eBay's Graphics/Video
-# Cards category (27386), which keeps out whole PCs and laptops. min_price
-# drops coolers, backplates and parts listings, which also escape the exclude
-# list surprisingly often.
-
-[[watch]]
-name = "RX 6700 XT"
-query = "rx 6700 xt"
-# Not the 6750 XT or the non-XT 6700
-match = '6700\s*-?xt'
+name = "RTX 3090"
+query = "rtx 3090"
+match = '3090(?!\s*-?ti)'
 category_ids = [27386]
-interval_minutes = 15
-max_z = -2.0
-min_price = 100
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+min_price = 350
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
 
 [[watch]]
-name = "RX 6800"
-query = "rx 6800"
-# The query also returns 6800 XTs ("RX 6800 XT", "RX6800XT"), which belong to the next watch.
-# Not the Radeon Pro W6800 workstation card either.
-match = '(?<!w)6800(?!\s*-?xt)'
+name = "RTX 4070 Ti Super"
+query = "rtx 4070 ti super"
+match = '4070\s*-?ti\s*-?super'
 category_ids = [27386]
-interval_minutes = 15
-max_z = -2.0
-min_price = 140
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+min_price = 350
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
 
 [[watch]]
-name = "RX 6800 XT"
-query = "rx 6800 xt"
-match = '(?<!w)6800\s*-?xt'
+name = "RX 7900 XT"
+query = "rx 7900 xt"
+match = '(?<!w)7900\s*-?xt(?!\s*-?x)'
 category_ids = [27386]
-interval_minutes = 15
-max_z = -2.0
-min_price = 170
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "no ray tracing", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket"]
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+min_price = 300
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
+
+[[watch]]
+name = "RX 7900 GRE"
+query = "rx 7900 gre"
+match = '7900\s*-?gre'
+category_ids = [27386]
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+min_price = 250
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
+
+[[watch]]
+name = "RX 6900 XT"
+query = "rx 6900 xt"
+match = '(?<!w)6900\s*-?xt'
+category_ids = [27386]
+condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
+min_price = 250
+exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
