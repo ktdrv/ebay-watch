@@ -237,7 +237,7 @@ class CheckTest(unittest.TestCase):
         patterns = {w["name"]: w["match"] for w in tomllib.loads((Path(__file__).parent / "watches.toml").read_text())["watch"]}
         cases = {
             "RTX 3090": (["EVGA GeForce RTX 3090 FTW3 ULTRA GAMING 24GB", "RTX3090 24GB Founders Edition", "MSI RTX 3090 Trio"], ["EVGA GeForce RTX 3090 Ti FTW3 ULTRA", "RTX 3090Ti 24GB", "ASUS ROG Strix GeForce RTX 4090 24GB"]),
-            "RTX 4070 Ti Super": (["ASUS TUF RTX 4070 Ti SUPER 16GB", "Gigabyte 4070TI Super Gaming OC", "RTX 4070 Ti-Super"], ["MSI RTX 4070 SUPER 12GB", "Zotac RTX 4070 Ti 12GB", "RTX 4070 12GB"]),
+            "RTX 4070 Ti Super": (["ASUS TUF RTX 4070 Ti SUPER 16GB", "Gigabyte 4070TI Super Gaming OC", "RTX 4070 Ti-Super", "MSI RTX 4070 16GB Ventus", "RTX 4070Ti 16G", "Gigabyte RTX 4070 Ti Gaming OC 16GB GDDR6X"], ["MSI RTX 4070 SUPER 12GB", "Zotac RTX 4070 Ti 12GB", "RTX 4070 12GB", "RTX 4060 Ti 16GB", "4070 SUPER - RYZEN 9 7945HX BD790i Minisforum 16GB DDR5, 512GB Storage"]),
             "RX 7900 XT": (["Sapphire Pulse RX 7900 XT 20GB", "XFX RX 7900XT Speedster", "RX 7900 XT Tested working"], ["Sapphire Nitro+ RX 7900 XTX 24GB", "RX 7900XTX", "PowerColor RX 7900 GRE", "AMD Radeon Pro W7900 48GB"]),
             "RX 7900 GRE": (["PowerColor Hellhound RX 7900 GRE 16GB", "ASRock RX 7900GRE"], ["Sapphire RX 7900 XT 20GB", "RX 7900 XTX"]),
             "RX 9070 XT": (["PowerColor Reaper Radeon RX 9070 XT 16GB", "XFX Quicksilver AMD RX 9070XT White"], ["ASUS PRIME Radeon RX 9070 16GB GDDR6"]),

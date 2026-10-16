@@ -85,8 +85,11 @@ exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is",
 
 [[watch]]
 name = "RTX 4070 Ti Super"
-query = "rtx 4070 ti super"
-match = '4070\s*-?ti\s*-?super'
+# It is the only 16 GB 4070, so "4070 16GB" and "4070 Ti 16GB" titles are
+# this card from sellers who dropped "Super" (or got the memory wrong; check
+# before buying). eBay ORs the comma list in parentheses.
+query = "4070 (super, 16gb, 16g)"
+match = '4070\s*-?ti\s*-?super|4070(?!\s*-?super)(\s*-?ti)?\W+(\w+\W+){0,3}16\s*gb?\b'
 category_ids = [27386]
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
 min_price = 350
