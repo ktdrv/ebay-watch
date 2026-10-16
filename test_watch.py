@@ -236,14 +236,9 @@ class CheckTest(unittest.TestCase):
     def test_title_patterns_from_watches_toml(self) -> None:
         patterns = {w["name"]: w["match"] for w in tomllib.loads((Path(__file__).parent / "watches.toml").read_text())["watch"]}
         cases = {
-            "RTX 3090": (["EVGA GeForce RTX 3090 FTW3 ULTRA GAMING 24GB", "RTX3090 24GB Founders Edition", "MSI RTX 3090 Trio"], ["EVGA GeForce RTX 3090 Ti FTW3 ULTRA", "RTX 3090Ti 24GB", "ASUS ROG Strix GeForce RTX 4090 24GB"]),
             "RTX 4070 Ti Super": (["ASUS TUF RTX 4070 Ti SUPER 16GB", "Gigabyte 4070TI Super Gaming OC", "RTX 4070 Ti-Super", "MSI RTX 4070 16GB Ventus", "RTX 4070Ti 16G", "Gigabyte RTX 4070 Ti Gaming OC 16GB GDDR6X"], ["MSI RTX 4070 SUPER 12GB", "Zotac RTX 4070 Ti 12GB", "RTX 4070 12GB", "RTX 4060 Ti 16GB", "4070 SUPER - RYZEN 9 7945HX BD790i Minisforum 16GB DDR5, 512GB Storage"]),
-            "RX 7900 XT": (["Sapphire Pulse RX 7900 XT 20GB", "XFX RX 7900XT Speedster", "RX 7900 XT Tested working"], ["Sapphire Nitro+ RX 7900 XTX 24GB", "RX 7900XTX", "PowerColor RX 7900 GRE", "AMD Radeon Pro W7900 48GB"]),
-            "RX 7900 GRE": (["PowerColor Hellhound RX 7900 GRE 16GB", "ASRock RX 7900GRE"], ["Sapphire RX 7900 XT 20GB", "RX 7900 XTX"]),
             "RX 9070 XT": (["PowerColor Reaper Radeon RX 9070 XT 16GB", "XFX Quicksilver AMD RX 9070XT White"], ["ASUS PRIME Radeon RX 9070 16GB GDDR6"]),
-            "RX 9070": (["ASUS PRIME Radeon RX 9070 16GB GDDR6", "Sapphire Pulse RX9070 OC"], ["Gigabyte Radeon RX 9070 XT Gaming OC 16GB", "RX 9070XT", "PowerColor RX 9070 GRE 12GB"]),
             "RTX 5070 Ti": (["ASUS TUF RTX 5070 Ti 16GB", "MSI RTX 5070TI Ventus"], ["MSI RTX 5070 12GB", "Zotac RTX 5070 Twin Edge"]),
-            "RX 6900 XT": (["AMD Radeon RX 6900 XT Reference", "ASRock RX 6900XT Phantom Gaming", "RX 6900 XT Tested"], ["ASRock AMD Radeon RX 6950 XT OC Formula", "AMD Radeon Pro W6900X 32GB", "RX 6800 XT"]),
         }
         for name, (yes, no) in cases.items():
             for t in yes:

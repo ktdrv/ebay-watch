@@ -2,8 +2,8 @@
 # an edit needs. Each check is one API call, plus one per new listing with
 # calculated shipping, and the default Browse API quota is 5,000 calls a day.
 # The sum of 1440 / interval_minutes over all watches must stay well under it:
-# here 5 x 720 (every 2 min) + 3 x 240 (every 6 min) = 4,320, leaving room for
-# shipping lookups and a new watch's first-check seeding (~5 calls). Past the quota, every check
+# here 3 x 720 (every 2 min) = 2,160, leaving room for shipping lookups and a
+# new watch's first-check seeding (~5 calls). Past the quota, every check
 # fails until midnight Pacific.
 
 # Default check interval; a watch's own interval_minutes overrides it.
@@ -68,20 +68,15 @@ zip = "10001"
 
 # One watch per GPU model, all in eBay's Graphics/Video Cards category (27386),
 # which keeps out whole PCs. Each title pattern keeps the near-namesakes out:
-# 3090 Ti, 4070 Super / 4070 Ti, 7900 XTX, and the Radeon Pro W-series.
+# 4070 Super / 4070 Ti, 9070 / 9070 GRE, 5070.
 # condition_ids is everything but sealed new (1000): new stock is a separate,
 # pricier market (on 2026-10-07 a 3090 was ~$2,456 new vs ~$1,638 used,
 # delivered) that would wreck the statistics. 1500 is eBay's "New other",
 # i.e. open box.
-
-[[watch]]
-name = "RTX 3090"
-query = "rtx 3090"
-match = '3090(?!\s*-?ti)'
-category_ids = [27386]
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-min_price = 350
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
+#
+# The 9070 XT and 5070 Ti are the current-generation 16 GB alternatives to the
+# 4070 Ti Super. On 2026-10-15 the median delivered price was $880 for the
+# 9070 XT, $1,120 for the 4070 Ti Super and $1,280 for the 5070 Ti.
 
 [[watch]]
 name = "RTX 4070 Ti Super"
@@ -96,31 +91,7 @@ min_price = 350
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
 
 [[watch]]
-name = "RX 7900 XT"
-query = "rx 7900 xt"
-match = '(?<!w)7900\s*-?xt(?!\s*-?x)'
-category_ids = [27386]
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-min_price = 300
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
-
-[[watch]]
-name = "RX 7900 GRE"
-query = "rx 7900 gre"
-match = '7900\s*-?gre'
-category_ids = [27386]
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-min_price = 250
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
-
-# Current-generation 16 GB alternatives to the 4070 Ti Super. On 2026-10-15
-# the median delivered price was $680 for the 9070, $880 for the 9070 XT,
-# $1,120 for the 4070 Ti Super and $1,280 for the 5070 Ti. Every 6 minutes
-# rather than 2 to stay inside the quota.
-
-[[watch]]
 name = "RX 9070 XT"
-interval_minutes = 6
 query = "rx 9070 xt"
 match = '9070\s*-?xt'
 category_ids = [27386]
@@ -129,30 +100,10 @@ min_price = 400
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
 
 [[watch]]
-name = "RX 9070"
-interval_minutes = 6
-query = "rx 9070"
-match = '9070(?!\s*-?(xt|gre))'
-category_ids = [27386]
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-min_price = 350
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
-
-[[watch]]
 name = "RTX 5070 Ti"
-interval_minutes = 6
 query = "rtx 5070 ti"
 match = '5070\s*-?ti'
 category_ids = [27386]
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
 min_price = 500
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
-
-[[watch]]
-name = "RX 6900 XT"
-query = "rx 6900 xt"
-match = '(?<!w)6900\s*-?xt'
-category_ids = [27386]
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-min_price = 250
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
