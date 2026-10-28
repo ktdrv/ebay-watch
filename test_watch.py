@@ -1,4 +1,4 @@
-"""Run with: uv run --no-project python -m unittest ebay-watch/test_watch.py"""
+"""Run with: uv run --no-project python -m unittest test_watch.py"""
 
 import io
 import re

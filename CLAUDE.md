@@ -1,6 +1,12 @@
-# eBay watcher: deal confidence
+# eBay watcher
 
-Handoff from the 2026-10-28 session. Code: `ebay-watch/watch.py` (poller, statistics, ntfy pushes), `ebay-watch/dashboard.py` (LAN-only dashboard at `ebay.example.com`), `ebay-watch/watches.toml` (watches, re-read every poll), `ebay-watch/test_watch.py`. Deployed to LXC 100 by `task deploy -- ebay-watch`; a `watch.py` change also needs `docker restart ebay-watch`.
+Polls eBay for new listings of the one item you want to buy and pushes the real deals to ntfy. Standard library only. Code: `watch.py` (poller, statistics, ntfy pushes), `dashboard.py` (dashboard served on :8091), `watches.toml` (the watches, re-read every poll), `test_watch.py` (`uv run --no-project python -m unittest test_watch.py`, 39 tests, passing at the split; it also checks the title regexes in `watches.toml`).
+
+Split out of the deployment repo on 2026-10-28 with full history. The homelab keeps only the deployment: `ebay-watch/compose.yaml` and `ebay-watch/.env` (eBay and ntfy keys). `task deploy-ebay-watch` in the homelab repo copies this tree, `watches.toml` included, to the Docker host and restarts the container. So editing a watch means editing it here, then deploying from the homelab. The dashboard sits behind the homelab's LAN-only `ebay.example.com` and has no login, so keep it off the public internet.
+
+## Current task: deal confidence
+
+Handoff from the 2026-10-28 session.
 
 ## The goal, in the owner's words
 
@@ -10,7 +16,7 @@ In other words: **minimise buyer's regret**. An alert should mean "you're unlike
 
 **Explicitly not the goal: time-to-sell.** The owner rejected it as a headline feature. A great deal gets bought on the spot anyway, and a bad deal's shelf life doesn't matter. Time-to-sell is useful only internally (see "attainable" below).
 
-The owner thinks the "is it actually cheap" logic is the differentiator, and may later split this out as its own open-source project. That's not decided.
+The owner thinks the "is it actually cheap" logic is the differentiator, and may open-source it. That's not decided.
 
 ## How it decides today
 
@@ -74,4 +80,4 @@ Order: 1 first (cheap, and it decides whether 2–5 are needed), then 2 + 3, the
 
 - The horizon H for "a better deal": a day, a week, or until a typical buyer would give up?
 - Whether alerts should be suppressed (rather than labelled) when the regret probability is above some threshold.
-- Whether this becomes its own repo. If it does, it follows Almanac's pattern: source in its own repo, the homelab keeps compose and `.env`, and a `deploy-*` task copies the code across.
+- Whether to open-source it. It now has its own repo, but publishing is undecided. `watches.toml` holds the home ZIP code, and the history mentions LAN addresses.
