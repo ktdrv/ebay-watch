@@ -92,7 +92,9 @@ exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is",
 
 [[watch]]
 name = "RX 9070 XT"
-query = "rx 9070 xt"
+# No "rx": eBay then drops titles like a bare "9070xt". The plain 9070 is
+# 16 GB too, so unlike the 4070 Ti Super, "9070 16GB" titles say nothing.
+query = "9070 xt"
 match = '9070\s*-?xt'
 category_ids = [27386]
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
