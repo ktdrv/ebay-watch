@@ -1,6 +1,6 @@
 # eBay watcher
 
-Polls eBay for new listings of the one item you want to buy and pushes the real deals to ntfy. Standard library only. Code: `watch.py` (poller, statistics, ntfy pushes), `dashboard.py` (dashboard served on :8091), `watches.toml` (the watches, re-read every poll), `test_watch.py` (`uv run --no-project python -m unittest test_watch.py`, 39 tests, passing at the split; it also checks the title regexes in `watches.toml`).
+Polls eBay for new listings of the one item you want to buy and pushes the real deals to ntfy. Standard library only. Code: `watch.py` (poller, statistics, ntfy pushes), `dashboard.py` (dashboard served on :8091), `watches.toml` (the watches, re-read every poll), `test_watch.py` (`uv run --no-project python -m unittest test_watch.py`; it also checks the title regexes in `watches.toml`), `backtest.py` (replays a copy of the database to check the alert odds against what happened).
 
 Split out of the deployment repo on 2026-10-28 with full history. The homelab keeps only the deployment: `ebay-watch/compose.yaml` and `ebay-watch/.env` (eBay and ntfy keys). `task deploy-ebay-watch` in the homelab repo copies this tree, `watches.toml` included, to the Docker host and restarts the container. So editing a watch means editing it here, then deploying from the homelab. The dashboard sits behind the homelab's LAN-only `ebay.example.com` and has no login, so keep it off the public internet.
 
@@ -62,22 +62,36 @@ Median ask vs median sold: 4070 Ti Super 924 vs 900, 9070 XT 805 vs 791, 5070 Ti
 - Better statistics on the same asking-price data would add little.
 - Overpriced listings that never sell still sit in the baseline.
 
-## Proposed approach (not started; the owner hasn't approved a design yet)
+## Built on 2026-10-28: odds of a cheaper one, on every alert
 
-1. **Backtest the regret rate before building anything.** It needs no API calls, only the existing database. For every past listing at or below the alert bar (the bar computed with only the data available when it was listed, so no look-ahead): did a cheaper listing for the same watch appear within the next N days (try 1, 3, 7)? That gives "of past alerts at this level, X% were beaten within a week". This is the number behind "peace of mind", and it shows whether `max_z = -2` is already enough or needs tuning per watch. Run it on the retired watches' data as well.
-2. **Show the regret probability on each alert.** Chance a cheaper comparable listing appears within H days ≈ 1 − exp(−λ·H·F(p)), where:
-   - λ = this watch's arrival rate of listings per day;
-   - F(p) = the share of listings at or below this price relative to the trend, so a falling market raises it over the horizon.
+Each alert now ends with a line like "Cheaper for their day: 2 of 60 listings seen in 21 days. Odds of a cheaper one within a week: 25%; even odds by day 12." The owner asked for the last part ("if I don't buy this one, how long until one as good turns up?"); it comes from the same model as the odds.
 
-   The alert could read: "One this cheap turns up about every 3 weeks; 20% chance of a cheaper one this week." Then check the predicted probabilities against the backtest (calibration), because a wrong number is worse than none.
-3. **Count only attainable listings as "a better deal".** A cheaper listing that sold within minutes, before an alert could reach the owner, wasn't a real option. Use a sold time from the item lookup, or just "would it have alerted", so the regret number is honest.
-4. **Build the baseline from listings that sold (or sold plus still live), not from all asks.** Recording outcomes means one item lookup per listing once it disappears from search or after N days. That's a few hundred calls a day against a 5,000/day quota shared with polling: budget it.
-5. **Keep the comparisons like for like.** Mismatched comparables are the main way a "deal" turns out fake, or a "better deal" turns out not comparable. Candidates: condition buckets (new / used / refurbished), and title flags for bundles, broken or missing parts, "box only", "read description". An LLM (Haiku) could tag each title. Seller signals such as feedback or a new account could separately mark a deal as too good to be true; z far below −4 is suspicious, not great.
+`outlook()` in `watch.py`: arrivals of cheaper listings are a Poisson process. A past listing counts as cheaper for a future day when it sat further under its own day's going rate than this price will sit under that day's, so a falling trend raises the odds with the horizon. Rate = (count + 0.5) / days watched; the half listing keeps "none so far" from reading as 0%. No odds until a watch has seen a week of live listings (`MIN_WATCHED`), because before that the half listing outweighs the data.
 
-Order: 1 first (cheap, and it decides whether 2–5 are needed), then 2 + 3, then 4, then 5.
+Only listings **seen live** count: `listing.seen_at` (new column) is when the watcher first saw a listing, and it counts as live when that is within 6 hours of eBay's listing date. The rest are unsold leftovers whose cheap siblings already sold: a new watch's seed, a widened search, and a steady trickle of months-old listings that resurface in search. Rows from before the column were backfilled on the box from insertion order (the newest listing date among all rows inserted up to that one, a lower bound on when it was seen).
+
+"Attainable" (old step 3) is only partly handled. Every live listing reached the owner as a push within minutes if it alerted, but alert-price listings sell in 10–30 minutes, so one that listed at 3am wasn't a real chance. The regret numbers below count it anyway, so they run somewhat high.
+
+### Backtest (`backtest.py`), 2026-10-28 snapshot
+
+Live-seen data is thin: 21 days for the 4070 Ti Super, 13 for the 9070 XT and 5070 Ti, 8 for the retired watches. Every listing replayed with only what the watcher had seen by then:
+
+- **Alerts are good prices, not the best of the week.** Of 12 alerts with a full week after them, 10 were beaten by a cheaper live listing within 7 days, usually by 5–15%. Within a day: 4 of 25.
+- Calibration (run with the one-week minimum lowered to a day, for sample size): at 7 days alerts were predicted 82% and actually 83%, all listings 98% vs 98%. At 1 day the model overstates badly (alerts 48% predicted, 16% actual), so the alert leaves out the one-day odds. Likely cause: cheap listings come in clusters (one seller, two units), which a Poisson model counts as independent chances.
+- With the one-week minimum in place, only 3 alerts have a full week to check; the calibration needs a few more weeks of data.
+- Without the half-listing prior, alerts the model called 0% were beaten half the time, so it stays.
+- Several of the "cheaper ones" were not comparable: Dell and HP OEM pulls (the cheapest 4070 Ti Super was an HP OEM card at $661), and on the 3090 "NVLink bridge" listings priced like cards. That is old step 5 below, and it matters more than expected: it inflates the regret odds.
+
+Rerun: copy the database off the box (a `sqlite3` backup through `docker exec`; the box has no sqlite3 CLI), then `uv run --no-project python backtest.py listings.db`.
+
+## Not built
+
+- **Baseline from sold listings** (one item lookup per listing after it disappears). The sold-signal experiment above showed better statistics on the same asks add little; revisit only if the odds prove badly calibrated with more data.
+- **Like-for-like comparisons**: condition buckets, title flags (OEM pull, bundle, bridge, box only), maybe a Haiku tagger; seller signals for "too good to be true". The backtest says this is now the most useful next step.
 
 ## Open questions for the owner
 
-- The horizon H for "a better deal": a day, a week, or until a typical buyer would give up?
-- Whether alerts should be suppressed (rather than labelled) when the regret probability is above some threshold.
+- Whether alerts should be suppressed (rather than labelled) when the odds of a cheaper one this week are high. At `max_z = -2` that would be most alerts.
+- Whether an OEM pull (Dell, HP) counts as the same card.
+- Whether "cheaper" should mean cheaper by a margin (say 3%), not by a dollar.
 - Whether to open-source it. It now has its own repo, but publishing is undecided. `watches.toml` holds the home ZIP code, and the history mentions LAN addresses.

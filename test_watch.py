@@ -1,6 +1,7 @@
 """Run with: uv run --no-project python -m unittest test_watch.py"""
 
 import io
+import math
 import re
 import sqlite3
 import sys
@@ -121,6 +122,41 @@ class MarketTest(unittest.TestCase):
         self.assertEqual(watch.market(history(db), NOW, 15, 7)["spread"], 6)
 
 
+class OutlookTest(unittest.TestCase):
+    def outlook(self, level: Callable[[int], float], price: float, since: float = NOW - 14 * DAY) -> dict | None:
+        db = new_db()
+        seed(db, level)
+        h = history(db)
+        return watch.outlook(h, watch.market(h, NOW, 15, 7), price, NOW, since)
+
+    def test_cheapest_in_two_weeks_is_rare_but_not_never(self) -> None:
+        o = self.outlook(lambda d: 300, 280)
+        self.assertEqual((o["cheaper"], o["of"]), (0, 140))
+        # Half a listing in 14 days: one every 28 days.
+        self.assertAlmostEqual(o["week"], 1 - math.exp(-7 / 28), places=3)
+        self.assertAlmostEqual(o["even_odds_days"], 28 * math.log(2), delta=0.25)
+        self.assertIsNone(self.outlook(lambda d: 300, 280, since=NOW - 30 * DAY)["even_odds_days"])
+
+    def test_ordinary_price_is_beaten_within_the_day(self) -> None:
+        o = self.outlook(lambda d: 300, 300)
+        self.assertGreater(o["day"], 0.99)
+        self.assertEqual(o["even_odds_days"], 0.25)
+
+    def test_falling_market_raises_the_odds_with_the_horizon(self) -> None:
+        # $175 is under every listing relative to its day, but the trend
+        # falls $10 a day, so in under three days $175 is the going rate.
+        o = self.outlook(lambda d: 200 + 10 * d, 175)
+        self.assertEqual(o["cheaper"], 0)
+        self.assertLess(o["day"], 0.05)
+        self.assertGreater(o["week"], 0.99)
+        self.assertLessEqual(o["even_odds_days"], 3)
+
+    def test_needs_a_week_watched(self) -> None:
+        o = self.outlook(lambda d: 300, 295, since=NOW - 7.5 * DAY)
+        self.assertEqual((o["of"], o["span"]), (80, 7.5))
+        self.assertIsNone(self.outlook(lambda d: 300, 295, since=NOW - 6.5 * DAY))
+
+
 class CheckTest(unittest.TestCase):
     def setUp(self) -> None:
         self.db = new_db()
@@ -145,6 +181,26 @@ class CheckTest(unittest.TestCase):
         deals = self.deals([item("new", 260, 10)])
         self.assertEqual([d["price"] for d in deals], [270])
         self.assertLess(deals[0]["z"], -2.5)
+
+    def test_odds_count_only_listings_seen_live(self) -> None:
+        seed(self.db, lambda d: 300)
+        self.assertEqual(self.deals([item("new", 260)])[0]["outlook"]["of"], 140)
+        # A widened search turns up three-day-old leftovers a day ago.
+        for i in range(5):
+            self.db.execute("INSERT INTO listing (watch, item_id, price, listed_at, seen_at) VALUES ('gpu', ?, 320, ?, ?)", (f"late{i}", NOW - 3 * DAY, NOW - DAY))
+        # Only "new" joins the count.
+        self.assertEqual(self.deals([item("newer", 259)])[0]["outlook"]["of"], 141)
+
+    def test_no_odds_until_the_watch_has_seen_a_week_live(self) -> None:
+        seed(self.db, lambda d: 300)
+        self.db.execute("UPDATE listing SET seen_at = max(listed_at, ?)", (NOW - 3 * DAY,))
+        deals = self.deals([item("new", 260)])
+        self.assertEqual(len(deals), 1)
+        self.assertIsNone(deals[0]["outlook"])
+
+    def test_listings_record_when_they_were_first_seen(self) -> None:
+        watch.check(self.db, W, [item("a", 300, listed=NOW - 5 * DAY)], NOW)
+        self.assertEqual(self.db.execute("SELECT seen_at FROM listing").fetchone(), (NOW,))
 
     def test_flat_market_ordinary_listing_is_quiet(self) -> None:
         seed(self.db, lambda d: 300)
@@ -268,7 +324,7 @@ class CheckTest(unittest.TestCase):
 
 class PushTest(unittest.TestCase):
     def test_caps_pushes_and_summarises_the_rest(self) -> None:
-        deals = [{"title": "t", "price": float(p), "shipping": 0.0, "condition": "Used", "seller": "seller 500 (100.0%)", "url": "u", "image": None, "level": 300.0, "expected": 290.0, "per_week": -7.0, "z": -3.0} for p in range(200, 208)]
+        deals = [{"title": "t", "price": float(p), "shipping": 0.0, "condition": "Used", "seller": "seller 500 (100.0%)", "url": "u", "image": None, "level": 300.0, "expected": 290.0, "per_week": -7.0, "z": -3.0, "outlook": None} for p in range(200, 208)]
         with mock.patch.object(watch, "push") as push:
             watch.push_deals({"name": "gpu", "query": "rx 6800"}, deals)
         titles = [c.args[0] for c in push.call_args_list]
@@ -276,6 +332,13 @@ class PushTest(unittest.TestCase):
         self.assertEqual(titles[-1], "gpu: 3 more deals")
         self.assertEqual(len(titles), 6)
         self.assertIn("trend (-7/week) puts today at $290", push.call_args_list[0].args[1])
+
+    def test_says_the_odds_of_a_cheaper_one(self) -> None:
+        deal = {"title": "t", "price": 200.0, "shipping": 0.0, "condition": "Used", "seller": "s", "url": "u", "image": None, "level": 300.0, "expected": 290.0, "per_week": -7.0, "z": -3.0}
+        for even, says in ((11.25, "even odds by day 12"), (0.25, "even odds by day 1"), (None, "under even odds within a month")):
+            with mock.patch.object(watch, "push") as push:
+                watch.push_deals({"name": "gpu", "query": "q"}, [{**deal, "outlook": {"cheaper": 2, "of": 60, "span": 21.0, "day": 0.04, "week": 0.25, "even_odds_days": even}}])
+            self.assertIn(f"2 of 60 listings seen in 21 days. Odds of a cheaper one within a week: 25%; {says}.", push.call_args.args[1])
 
     def test_rejected_message_is_dropped_but_outage_raises(self) -> None:
         env = {"NTFY_URL": "http://ntfy", "NTFY_TOKEN": "tk_x"}
@@ -375,7 +438,7 @@ class DashboardTest(unittest.TestCase):
     def test_renders_a_ready_watch_with_its_bar_and_alerted_listing(self) -> None:
         db = new_db()
         seed(db, lambda d: 300)
-        db.execute("INSERT INTO listing VALUES ('gpu', 'deal', 250, ?, '<b>RX 6800</b> steal', 'https://www.ebay.com/itm/deal', 0, 'bob 900 (99.9%)', 1)", (NOW - 3600,))
+        db.execute("INSERT INTO listing VALUES ('gpu', 'deal', 250, ?, '<b>RX 6800</b> steal', 'https://www.ebay.com/itm/deal', 0, 'bob 900 (99.9%)', 1, NULL)", (NOW - 3600,))
         data = watch.dashboard_data(db, {"watch": [W]}, NOW)
         self.assertEqual(len(data[0]["bar_line"]), 31)
         self.assertAlmostEqual(data[0]["bar_line"][-1][1], watch.bar(data[0]["market"], -2.0), places=6)
@@ -412,7 +475,7 @@ class DashboardTest(unittest.TestCase):
     def test_tooltip_data_is_escaped(self) -> None:
         db = new_db()
         seed(db, lambda d: 300)
-        db.execute("""INSERT INTO listing VALUES ('gpu', 'x', 250, ?, 'RX 6800 "mint" <img src=x onerror=alert(1)>', 'https://www.ebay.com/itm/x', 10, 'eve', 0)""", (NOW - 60,))
+        db.execute("""INSERT INTO listing VALUES ('gpu', 'x', 250, ?, 'RX 6800 "mint" <img src=x onerror=alert(1)>', 'https://www.ebay.com/itm/x', 10, 'eve', 0, NULL)""", (NOW - 60,))
         page = dashboard.render(watch.dashboard_data(db, {"watch": [W]}, NOW), {"last_poll": NOW, "errors": []}, NOW)
         self.assertIn('data-title="RX 6800 &quot;mint&quot; &lt;img src=x onerror=alert(1)&gt;"', page)
         self.assertIn('data-ship="$240 + $10 shipping"', page)

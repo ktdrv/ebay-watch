@@ -8,11 +8,13 @@ Standard library only, so it runs on a stock python image with nothing to build.
 """
 
 import base64
+import bisect
 import collections
 import contextlib
 import http.server
 import json
 import logging
+import math
 import os
 import re
 import sqlite3
@@ -50,11 +52,12 @@ SEED_LIMIT = 1000
 # new again, re-seeding at 5 API calls a minute.
 #
 # title, url, shipping and seller are only for the dashboard. alerted marks
-# the listings that were pushed.
+# the listings that were pushed. seen_at is when the watcher first saw the
+# listing; NULL for listings recorded before it existed.
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS listing (
     watch TEXT, item_id TEXT, price REAL, listed_at REAL,
-    title TEXT, url TEXT, shipping REAL, seller TEXT, alerted INTEGER NOT NULL DEFAULT 0,
+    title TEXT, url TEXT, shipping REAL, seller TEXT, alerted INTEGER NOT NULL DEFAULT 0, seen_at REAL,
     PRIMARY KEY (watch, item_id)
 );
 CREATE TABLE IF NOT EXISTS seeded (watch TEXT PRIMARY KEY);
@@ -62,6 +65,13 @@ CREATE TABLE IF NOT EXISTS seeded (watch TEXT PRIMARY KEY);
 DASHBOARD_PORT = 8091
 
 QUOTE_ATTEMPTS = 3
+# A listing first seen within this long of going up was seen live; search can
+# lag a listing's creation date by an hour or two.
+LIVE = 6 * 3600
+# The odds of a cheaper one need this many days of live listings. The
+# half-listing prior in outlook() is spread over the days watched, so before
+# this it outweighs the data and every alert reads "likely beaten this week".
+MIN_WATCHED = 7
 
 log = logging.getLogger("ebay-watch")
 _token = {"value": "", "expires": 0.0}
@@ -202,6 +212,41 @@ def bar(m: dict, max_z: float, days_from_now: float = 0.0) -> float:
     return min(m["level"], m["expected"] + m["slope"] * days_from_now) + max_z * m["spread"]
 
 
+def outlook(live: list[tuple[float, float]], m: dict, price: float, now: float, since: float) -> dict | None:
+    """Odds that a listing cheaper than `price` turns up soon, from how often
+    cheaper ones turned up since `since`, when the watch started. None until
+    it has watched for MIN_WATCHED days.
+
+    live is (listed_at, delivered price) of the listings seen within LIVE of
+    going up. The rest were found days later (a new watch's seed, a widened
+    search), and those are the leftovers that hadn't sold: the cheap ones are
+    missing, so counting them would understate the odds.
+
+    A past listing counts as cheaper for a future day when it sat further under
+    its day's going rate (the lower of median and trend, as in bar()) than
+    `price` sits under that future day's. So in a falling market the same
+    discount gets cheaper in dollars by the day and the odds rise with the
+    horizon. Arrivals are treated as a Poisson process, with half a listing
+    added to every count so "none so far" reads as rare, not never. The trend
+    is extrapolated at most a month ahead.
+    """
+    span = (now - since) / DAY
+    if span < MIN_WATCHED:
+        return None
+
+    def going(x: float) -> float:
+        return min(m["level"], m["expected"] + m["slope"] * x)
+
+    below = sorted(p - going((t - now) / DAY) for t, p in live if t >= since)
+    step, cumulative, expected = 0.25, [0.0], 0.0
+    while len(cumulative) <= 30 / step:
+        x = (len(cumulative) - 0.5) * step
+        expected += (bisect.bisect_left(below, price - going(x)) + 0.5) / span * step
+        cumulative.append(expected)
+    even = next((i * step for i, c in enumerate(cumulative) if c >= math.log(2)), None)
+    return {"cheaper": bisect.bisect_left(below, price - going(0)), "of": len(below), "span": span, "day": 1 - math.exp(-cumulative[4]), "week": 1 - math.exp(-cumulative[28]), "even_odds_days": even}
+
+
 def readiness(watch: dict) -> tuple[int, int]:
     """(min_listings, min_days) before a watch alerts. A trend needs at least
     two days to have a slope."""
@@ -219,8 +264,13 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
     first_poll = db.execute("INSERT OR IGNORE INTO seeded VALUES (?)", (name,)).rowcount == 1
     cutoff = now - watch.get("history_days", 30) * DAY
     min_listings, min_days = readiness(watch)
-    history = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL", (name, cutoff)).fetchall()
+    rows = db.execute("SELECT listed_at, price, seen_at FROM listing WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL", (name, cutoff)).fetchall()
+    history = [(t, p) for t, p, _ in rows]
     m = market(history, now, min_listings, min_days)
+    live = [(t, p) for t, p, seen in rows if seen is None or seen - t <= LIVE]
+    # The watch's first poll. Listings from before seen_at existed stand in
+    # with their listing date, which for a seed reaches back past the window.
+    since = max(db.execute("SELECT min(coalesce(seen_at, listed_at)) FROM listing WHERE watch = ?", (name,)).fetchone()[0] or cutoff, cutoff)
     max_z = watch.get("max_z", -2.0)
     exclude = [w.lower() for w in watch.get("exclude", [])]
 
@@ -277,15 +327,15 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
         # quote: pickup only, freight, ended) stays out of the statistics.
         seller_text = f"{seller.get('username', '?')} {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"
         db.execute(
-            "INSERT INTO listing (watch, item_id, price, listed_at, title, url, shipping, seller) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (name, item["itemId"], d and d[0], t, title, item.get("itemWebUrl"), d and d[1], seller_text),
+            "INSERT INTO listing (watch, item_id, price, listed_at, title, url, shipping, seller, seen_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (name, item["itemId"], d and d[0], t, title, item.get("itemWebUrl"), d and d[1], seller_text, now),
         )
         if d is None or first_poll or m is None:
             continue
         price, shipping = d
         if price <= bar(m, max_z):
             z = (price - min(m["level"], m["expected"])) / m["spread"]
-            deals.append({**m, "item_id": item["itemId"], "title": title, "price": price, "shipping": shipping, "z": z, "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
+            deals.append({**m, "item_id": item["itemId"], "title": title, "price": price, "shipping": shipping, "z": z, "outlook": outlook(live, m, price, now, since), "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
     baseline = None
     if first_poll:
         recorded = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL", (name, cutoff)).fetchall()
@@ -324,6 +374,10 @@ def push_deals(watch: dict, deals: list[dict]) -> None:
             " · ".join(x for x in (ship, d["condition"], d["seller"]) if x),
             f"Recent median ${d['level']:.0f}; trend ({d['per_week']:+.0f}/week) puts today at ${d['expected']:.0f}. z {d['z']:.1f} under the lower of the two.",
         ]
+        # No odds for the next day: the backtest found them about twice too high.
+        if o := d["outlook"]:
+            even = f"even odds by day {math.ceil(o['even_odds_days'])}" if o["even_odds_days"] is not None else "under even odds within a month"
+            lines.append(f"Cheaper for their day: {o['cheaper']} of {o['of']} listings seen in {o['span']:.0f} days. Odds of a cheaper one within a week: {o['week']:.0%}; {even}.")
         push(f"{watch['name']}: ${d['price']:.2f} delivered", "\n".join(lines), click=d["url"], image=d["image"], priority=4, tags=["moneybag"])
     if len(deals) > MAX_PUSHES:
         rest = deals[MAX_PUSHES:]
@@ -466,6 +520,9 @@ def main() -> None:
     # timed out after its pushes went out would roll back and push them again.
     db.execute("PRAGMA journal_mode=WAL")
     db.executescript(SCHEMA)
+    # Databases from before seen_at existed.
+    with contextlib.suppress(sqlite3.OperationalError):
+        db.execute("ALTER TABLE listing ADD COLUMN seen_at REAL")
     serve_dashboard(db_path, config_path)
     while True:
         started = time.time()
