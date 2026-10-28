@@ -64,7 +64,9 @@ Median ask vs median sold: 4070 Ti Super 924 vs 900, 9070 XT 805 vs 791, 5070 Ti
 
 ## Built on 2026-10-28: odds of a cheaper one, on every alert
 
-Each alert now ends with a line like "Cheaper for their day: 2 of 60 listings seen in 21 days. Odds of a cheaper one within a week: 25%; even odds by day 12." The owner asked for the last part ("if I don't buy this one, how long until one as good turns up?"); it comes from the same model as the odds.
+Each alert now opens with a verdict like "Good price, but one 3%+ cheaper is likely soon: even odds by day 3, 84% within a week. (5 of 80 listings seen in 21 days were 3%+ cheaper for their day.)", or "Good price, and one 3%+ cheaper is unlikely soon: …" when even odds are more than a week out. The owner asked for the "even odds by day N" part ("if I don't buy this one, how long until one as good turns up?"); it comes from the same model as the odds.
+
+Owner's rulings on 2026-10-28: every alert still fires (no suppression by the odds; the verdict tells them to maybe wait); "cheaper" means cheaper by a margin, `cheaper_by` per watch in percent, default 3, so it fits any item price; OEM pulls and similar variants count as the same item, left for the owner to judge from the title. The watcher is meant for anything worth waiting on a deal for, not just GPUs, so like-for-like handling stays generic (the per-watch title regex and exclude list), not card-specific flags.
 
 `outlook()` in `watch.py`: arrivals of cheaper listings are a Poisson process. A past listing counts as cheaper for a future day when it sat further under its own day's going rate than this price will sit under that day's, so a falling trend raises the odds with the horizon. Rate = (count + 0.5) / days watched; the half listing keeps "none so far" from reading as 0%. No odds until a watch has seen a week of live listings (`MIN_WATCHED`), because before that the half listing outweighs the data.
 
@@ -80,18 +82,16 @@ Live-seen data is thin: 21 days for the 4070 Ti Super, 13 for the 9070 XT and 50
 - Calibration (run with the one-week minimum lowered to a day, for sample size): at 7 days alerts were predicted 82% and actually 83%, all listings 98% vs 98%. At 1 day the model overstates badly (alerts 48% predicted, 16% actual), so the alert leaves out the one-day odds. Likely cause: cheap listings come in clusters (one seller, two units), which a Poisson model counts as independent chances.
 - With the one-week minimum in place, only 3 alerts have a full week to check; the calibration needs a few more weeks of data.
 - Without the half-listing prior, alerts the model called 0% were beaten half the time, so it stays.
-- Several of the "cheaper ones" were not comparable: Dell and HP OEM pulls (the cheapest 4070 Ti Super was an HP OEM card at $661), and on the 3090 "NVLink bridge" listings priced like cards. That is old step 5 below, and it matters more than expected: it inflates the regret odds.
+- Several of the "cheaper ones" were not comparable: Dell and HP OEM pulls (the cheapest 4070 Ti Super was an HP OEM card at $661), and on the 3090 "NVLink bridge" listings priced like cards. The owner counts OEM pulls as the same card; the bridges are an exclude-list miss on a retired watch.
+- With the 3% margin (the run above was by any dollar), alerts on the replayed data: one-day odds predicted 23%, actual 14%; week 52% vs 67% on only 3 alerts.
 
 Rerun: copy the database off the box (a `sqlite3` backup through `docker exec`; the box has no sqlite3 CLI), then `uv run --no-project python backtest.py listings.db`.
 
 ## Not built
 
 - **Baseline from sold listings** (one item lookup per listing after it disappears). The sold-signal experiment above showed better statistics on the same asks add little; revisit only if the odds prove badly calibrated with more data.
-- **Like-for-like comparisons**: condition buckets, title flags (OEM pull, bundle, bridge, box only), maybe a Haiku tagger; seller signals for "too good to be true". The backtest says this is now the most useful next step.
+- **Like-for-like comparisons** beyond the exclude list: condition buckets, maybe a Haiku tagger for listings that aren't the item at all (accessories, box only); seller signals for "too good to be true". OEM pulls count as the same item (owner's ruling), so they are not filtered.
 
 ## Open questions for the owner
 
-- Whether alerts should be suppressed (rather than labelled) when the odds of a cheaper one this week are high. At `max_z = -2` that would be most alerts.
-- Whether an OEM pull (Dell, HP) counts as the same card.
-- Whether "cheaper" should mean cheaper by a margin (say 3%), not by a dollar.
 - Whether to open-source it. It now has its own repo, but publishing is undecided. `watches.toml` holds the home ZIP code, and the history mentions LAN addresses.

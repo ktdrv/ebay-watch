@@ -6,9 +6,10 @@ adds on start).
 
 Replays every priced listing the watcher saw live as if it had just appeared:
 the market and odds use only what the watcher had seen by then, then the
-database says whether a cheaper one (in dollars, delivered, also seen live)
-did turn up within a day and a week. Listings too close to the end of a
-watch's data for a full horizon are left out. Settings come from
+database says whether a cheaper one (by the watch's cheaper_by margin, in
+delivered dollars, also seen live) did turn up within a day and a week.
+Listings too close to the end of a watch's data for a full horizon are left
+out. Settings come from
 watches.toml, with the defaults for watches no longer in it.
 """
 
@@ -31,7 +32,7 @@ def main(path: str) -> None:
     rows = []
     for (name,) in db.execute("SELECT DISTINCT watch FROM listing WHERE price IS NOT NULL"):
         w = config.get(name, {})
-        days, max_z = w.get("history_days", 30), w.get("max_z", -2.0)
+        days, max_z, margin = w.get("history_days", 30), w.get("max_z", -2.0), w.get("cheaper_by", 3) / 100
         # A NULL seen_at (a database never backfilled) counts as seen live.
         listings = db.execute("SELECT listed_at, price, coalesce(seen_at, listed_at) FROM listing WHERE watch = ? AND price IS NOT NULL ORDER BY listed_at", (name,)).fetchall()
         start, end = min(s for _, _, s in listings), max(s for _, _, s in listings)
@@ -39,10 +40,10 @@ def main(path: str) -> None:
         for t, p in live:
             history = [(u, q) for u, q, s in listings if s <= t and t - days * DAY <= u < t]
             m = watch.market(history, t, *watch.readiness(w))
-            o = m and watch.outlook([(u, q) for u, q in live if t - days * DAY <= u < t], m, p, t, max(start, t - days * DAY))
+            o = m and watch.outlook([(u, q) for u, q in live if t - days * DAY <= u < t], m, p, t, max(start, t - days * DAY), margin)
             if not o:
                 continue
-            nxt = next((u for u, q in live if u > t and q < p), None)
+            nxt = next((u for u, q in live if u > t and q < p * (1 - margin)), None)
             wait = None if nxt is None else (nxt - t) / DAY
             for horizon, key in ((1, "day"), (7, "week")):
                 if t + horizon * DAY <= end:

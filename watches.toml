@@ -37,6 +37,9 @@ zip = "10001"
 #                 $298. The dashboard draws the bar, so tune against that. For
 #                 a watch's first history_days its history is seeded from
 #                 listings still up, which lack the cheap ones that sold fast.
+#   cheaper_by    default 3 (percent). Alerts give the odds of a listing at
+#                 least this much cheaper turning up soon. A percentage so it
+#                 fits a $50 item and a $1000 one alike.
 #   history_days  default 30. The window for both the median and the trend.
 #                 GPUs list about once a day per model, so a shorter window
 #                 leaves too few listings to fit a trend.

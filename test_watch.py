@@ -123,11 +123,11 @@ class MarketTest(unittest.TestCase):
 
 
 class OutlookTest(unittest.TestCase):
-    def outlook(self, level: Callable[[int], float], price: float, since: float = NOW - 14 * DAY) -> dict | None:
+    def outlook(self, level: Callable[[int], float], price: float, since: float = NOW - 14 * DAY, margin: float = 0.0) -> dict | None:
         db = new_db()
         seed(db, level)
         h = history(db)
-        return watch.outlook(h, watch.market(h, NOW, 15, 7), price, NOW, since)
+        return watch.outlook(h, watch.market(h, NOW, 15, 7), price, NOW, since, margin)
 
     def test_cheapest_in_two_weeks_is_rare_but_not_never(self) -> None:
         o = self.outlook(lambda d: 300, 280)
@@ -150,6 +150,11 @@ class OutlookTest(unittest.TestCase):
         self.assertLess(o["day"], 0.05)
         self.assertGreater(o["week"], 0.99)
         self.assertLessEqual(o["even_odds_days"], 3)
+
+    def test_cheaper_means_cheaper_by_the_margin(self) -> None:
+        plain, by3 = self.outlook(lambda d: 300, 291), self.outlook(lambda d: 300, 300, margin=0.03)
+        self.assertEqual(by3, plain)
+        self.assertLess(by3["cheaper"], self.outlook(lambda d: 300, 300)["cheaper"])
 
     def test_needs_a_week_watched(self) -> None:
         o = self.outlook(lambda d: 300, 295, since=NOW - 7.5 * DAY)
@@ -335,10 +340,16 @@ class PushTest(unittest.TestCase):
 
     def test_says_the_odds_of_a_cheaper_one(self) -> None:
         deal = {"title": "t", "price": 200.0, "shipping": 0.0, "condition": "Used", "seller": "s", "url": "u", "image": None, "level": 300.0, "expected": 290.0, "per_week": -7.0, "z": -3.0}
-        for even, says in ((11.25, "even odds by day 12"), (0.25, "even odds by day 1"), (None, "under even odds within a month")):
+        for w, even, says in (
+            ({}, 11.25, "Good price, and one 3%+ cheaper is unlikely soon: 25% within a week, even odds by day 12."),
+            ({}, None, "Good price, and one 3%+ cheaper is unlikely soon: 25% within a week, under even odds within a month."),
+            ({"cheaper_by": 5}, 0.25, "Good price, but one 5%+ cheaper is likely soon: even odds by day 1, 25% within a week."),
+        ):
             with mock.patch.object(watch, "push") as push:
-                watch.push_deals({"name": "gpu", "query": "q"}, [{**deal, "outlook": {"cheaper": 2, "of": 60, "span": 21.0, "day": 0.04, "week": 0.25, "even_odds_days": even}}])
-            self.assertIn(f"2 of 60 listings seen in 21 days. Odds of a cheaper one within a week: 25%; {says}.", push.call_args.args[1])
+                watch.push_deals({"name": "gpu", "query": "q", **w}, [{**deal, "outlook": {"cheaper": 2, "of": 60, "span": 21.0, "day": 0.04, "week": 0.25, "even_odds_days": even}}])
+            body = push.call_args.args[1]
+            self.assertTrue(body.startswith(says), body)
+            self.assertIn("(2 of 60 listings seen in 21 days were", body)
 
     def test_rejected_message_is_dropped_but_outage_raises(self) -> None:
         env = {"NTFY_URL": "http://ntfy", "NTFY_TOKEN": "tk_x"}

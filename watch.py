@@ -212,10 +212,12 @@ def bar(m: dict, max_z: float, days_from_now: float = 0.0) -> float:
     return min(m["level"], m["expected"] + m["slope"] * days_from_now) + max_z * m["spread"]
 
 
-def outlook(live: list[tuple[float, float]], m: dict, price: float, now: float, since: float) -> dict | None:
-    """Odds that a listing cheaper than `price` turns up soon, from how often
-    cheaper ones turned up since `since`, when the watch started. None until
-    it has watched for MIN_WATCHED days.
+def outlook(live: list[tuple[float, float]], m: dict, price: float, now: float, since: float, margin: float) -> dict | None:
+    """Odds that a listing at least `margin` (a fraction) cheaper than `price`
+    turns up soon, from how often such ones turned up since `since`, when the
+    watch started. A margin rather than any cheaper dollar, so a few dollars'
+    difference isn't a regret whatever the item costs. None until it has
+    watched for MIN_WATCHED days.
 
     live is (listed_at, delivered price) of the listings seen within LIVE of
     going up. The rest were found days later (a new watch's seed, a widened
@@ -238,13 +240,14 @@ def outlook(live: list[tuple[float, float]], m: dict, price: float, now: float, 
         return min(m["level"], m["expected"] + m["slope"] * x)
 
     below = sorted(p - going((t - now) / DAY) for t, p in live if t >= since)
+    target = price * (1 - margin)
     step, cumulative, expected = 0.25, [0.0], 0.0
     while len(cumulative) <= 30 / step:
         x = (len(cumulative) - 0.5) * step
-        expected += (bisect.bisect_left(below, price - going(x)) + 0.5) / span * step
+        expected += (bisect.bisect_left(below, target - going(x)) + 0.5) / span * step
         cumulative.append(expected)
     even = next((i * step for i, c in enumerate(cumulative) if c >= math.log(2)), None)
-    return {"cheaper": bisect.bisect_left(below, price - going(0)), "of": len(below), "span": span, "day": 1 - math.exp(-cumulative[4]), "week": 1 - math.exp(-cumulative[28]), "even_odds_days": even}
+    return {"cheaper": bisect.bisect_left(below, target - going(0)), "of": len(below), "span": span, "day": 1 - math.exp(-cumulative[4]), "week": 1 - math.exp(-cumulative[28]), "even_odds_days": even}
 
 
 def readiness(watch: dict) -> tuple[int, int]:
@@ -335,7 +338,7 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
         price, shipping = d
         if price <= bar(m, max_z):
             z = (price - min(m["level"], m["expected"])) / m["spread"]
-            deals.append({**m, "item_id": item["itemId"], "title": title, "price": price, "shipping": shipping, "z": z, "outlook": outlook(live, m, price, now, since), "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
+            deals.append({**m, "item_id": item["itemId"], "title": title, "price": price, "shipping": shipping, "z": z, "outlook": outlook(live, m, price, now, since, watch.get("cheaper_by", 3) / 100), "url": item["itemWebUrl"], "image": item.get("image", {}).get("imageUrl"), "condition": item.get("condition", ""), "seller": f"seller {seller.get('feedbackScore', '?')} ({seller.get('feedbackPercentage', '?')}%)"})
     baseline = None
     if first_poll:
         recorded = db.execute("SELECT listed_at, price FROM listing WHERE watch = ? AND listed_at >= ? AND price IS NOT NULL", (name, cutoff)).fetchall()
@@ -374,10 +377,18 @@ def push_deals(watch: dict, deals: list[dict]) -> None:
             " · ".join(x for x in (ship, d["condition"], d["seller"]) if x),
             f"Recent median ${d['level']:.0f}; trend ({d['per_week']:+.0f}/week) puts today at ${d['expected']:.0f}. z {d['z']:.1f} under the lower of the two.",
         ]
+        # Every alert is a good price; the verdict says whether to expect a
+        # better one, and goes first so it shows in a collapsed notification.
         # No odds for the next day: the backtest found them about twice too high.
         if o := d["outlook"]:
-            even = f"even odds by day {math.ceil(o['even_odds_days'])}" if o["even_odds_days"] is not None else "under even odds within a month"
-            lines.append(f"Cheaper for their day: {o['cheaper']} of {o['of']} listings seen in {o['span']:.0f} days. Odds of a cheaper one within a week: {o['week']:.0%}; {even}.")
+            by = f"{watch.get('cheaper_by', 3):g}%+ cheaper"
+            even = o["even_odds_days"]
+            if even is not None and even <= 7:
+                verdict = f"Good price, but one {by} is likely soon: even odds by day {math.ceil(even)}, {o['week']:.0%} within a week."
+            else:
+                when = f"even odds by day {math.ceil(even)}" if even is not None else "under even odds within a month"
+                verdict = f"Good price, and one {by} is unlikely soon: {o['week']:.0%} within a week, {when}."
+            lines.insert(0, f"{verdict} ({o['cheaper']} of {o['of']} listings seen in {o['span']:.0f} days were {by} for their day.)")
         push(f"{watch['name']}: ${d['price']:.2f} delivered", "\n".join(lines), click=d["url"], image=d["image"], priority=4, tags=["moneybag"])
     if len(deals) > MAX_PUSHES:
         rest = deals[MAX_PUSHES:]
