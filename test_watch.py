@@ -70,9 +70,9 @@ class DeliveredTest(unittest.TestCase):
 class SearchTest(unittest.TestCase):
     def test_only_us_located_listings_by_default(self) -> None:
         def filters(w: dict) -> str:
-            with mock.patch.object(watch, "ebay_token", return_value="t"), mock.patch.object(watch.urllib.request, "urlopen") as urlopen:
+            with mock.patch.object(watch, "ebay_token", return_value="t"), mock.patch.dict(watch.os.environ, {"ZIP": "10001"}), mock.patch.object(watch.urllib.request, "urlopen") as urlopen:
                 urlopen.return_value.__enter__.return_value = io.BytesIO(b"{}")
-                watch.search(w, "10001")
+                watch.search(w)
             return watch.urllib.parse.parse_qs(watch.urllib.parse.urlsplit(urlopen.call_args.args[0].full_url).query)["filter"][0]
 
         self.assertIn("itemLocationCountry:US", filters(W))
@@ -254,9 +254,9 @@ class CheckTest(unittest.TestCase):
         calc = item("calc", 240, None)
         calc["shippingOptions"] = [{"shippingCostType": "CALCULATED"}]
         with mock.patch.object(watch, "shipping_quote", return_value=20.0) as quote:
-            deals = watch.check(self.db, W, [calc], NOW, "10001")[0]
-            self.assertEqual(watch.check(self.db, W, [calc], NOW, "10001")[0], [])
-        quote.assert_called_once_with("calc", "10001")
+            deals = watch.check(self.db, W, [calc], NOW)[0]
+            self.assertEqual(watch.check(self.db, W, [calc], NOW)[0], [])
+        quote.assert_called_once_with("calc")
         self.assertEqual([(d["price"], d["shipping"]) for d in deals], [(260, 20)])
 
     def test_failing_lookup_is_retried_twice_then_given_up_without_failing_the_poll(self) -> None:
@@ -266,10 +266,10 @@ class CheckTest(unittest.TestCase):
         recorded = "SELECT count(*) FROM listing WHERE item_id = 'calc'"
         with mock.patch.object(watch, "_quote_failures", watch.collections.Counter()), mock.patch.object(watch, "shipping_quote", side_effect=OSError("eBay 503")) as quote:
             for _ in range(2):
-                self.assertEqual(watch.check(self.db, W, [calc], NOW, "10001")[0], [])
+                self.assertEqual(watch.check(self.db, W, [calc], NOW)[0], [])
                 self.assertEqual(self.db.execute(recorded).fetchone()[0], 0)
-            watch.check(self.db, W, [calc], NOW, "10001")
-            watch.check(self.db, W, [calc], NOW, "10001")
+            watch.check(self.db, W, [calc], NOW)
+            watch.check(self.db, W, [calc], NOW)
         self.assertEqual(quote.call_count, 3)
         self.assertEqual(self.db.execute(recorded + " AND price IS NULL").fetchone()[0], 1)
 
@@ -279,10 +279,10 @@ class CheckTest(unittest.TestCase):
         for it in (ended, old):
             it["shippingOptions"] = [{"shippingCostType": "CALCULATED"}]
         with mock.patch.object(watch, "shipping_quote", return_value=None) as quote:
-            self.assertEqual(watch.check(self.db, W, [pickup, ended, old], NOW, "10001")[0], [])
-            watch.check(self.db, W, [pickup, ended, old], NOW, "10001")
+            self.assertEqual(watch.check(self.db, W, [pickup, ended, old], NOW)[0], [])
+            watch.check(self.db, W, [pickup, ended, old], NOW)
         # Only the in-window calculated listing is looked up, and only once.
-        quote.assert_called_once_with("ended", "10001")
+        quote.assert_called_once_with("ended")
         # All three recorded with no price; had a NULL reached the statistics,
         # the second check above would have crashed computing a median.
         self.assertEqual(self.db.execute("SELECT count(*) FROM listing WHERE item_id IN ('pickup', 'ended', 'old') AND price IS NULL").fetchone()[0], 3)
@@ -375,7 +375,7 @@ class PollTest(unittest.TestCase):
 
     def test_each_watch_is_checked_at_its_own_interval(self) -> None:
         clock = [NOW]
-        config = {"zip": "10001", "interval_minutes": 10, "watch": [{**W, "name": "cpu", "interval_minutes": 1.5}, {**W, "name": "gpu", "interval_minutes": 15}, {**W, "name": "default"}]}
+        config = {"interval_minutes": 10, "watch": [{**W, "name": "cpu", "interval_minutes": 1.5}, {**W, "name": "gpu", "interval_minutes": 15}, {**W, "name": "default"}]}
         db = new_db()
         checked = []
         with mock.patch.object(watch.time, "time", side_effect=lambda: clock[0]), mock.patch.object(watch, "search", side_effect=lambda w, *a: checked.append(w["name"]) or []), mock.patch.object(watch, "push"):
@@ -392,13 +392,13 @@ class PollTest(unittest.TestCase):
         # listings don't count towards the history.
         pages = [[item(f"p{p}-{i}", 300, listed=NOW - (p * 10 + 1) * DAY + i) for i in range(200)] for p in range(5)]
         with mock.patch.object(watch.time, "time", return_value=NOW), mock.patch.object(watch, "search", side_effect=pages) as search, mock.patch.object(watch, "push") as push:
-            self.assertEqual(watch.poll(new_db(), {"zip": "10001", "watch": [W]}), [])
-        self.assertEqual([c.args[2] for c in search.call_args_list[1:]], [200, 400, 600])
+            self.assertEqual(watch.poll(new_db(), {"watch": [W]}), [])
+        self.assertEqual([c.args[1] for c in search.call_args_list[1:]], [200, 400, 600])
         self.assertIn("600 listings", push.call_args.args[1])
 
     def test_one_failing_watch_alerts_even_while_others_succeed(self) -> None:
         clock = [NOW]
-        config = {"zip": "10001", "watch": [{**W, "name": "cpu", "interval_minutes": 1.5}, {**W, "name": "gpu", "interval_minutes": 15}]}
+        config = {"watch": [{**W, "name": "cpu", "interval_minutes": 1.5}, {**W, "name": "gpu", "interval_minutes": 15}]}
 
         def search(w: dict, *a: object) -> list:
             if w["name"] == "cpu":
@@ -423,16 +423,16 @@ class PollTest(unittest.TestCase):
         page = [item(f"x{i}", 300, title="RX 6800 for parts", listed=NOW - 60) for i in range(200)]
         db = new_db()
         with mock.patch.object(watch.time, "time", return_value=NOW), mock.patch.object(watch, "search", side_effect=lambda *a: list(page)) as search, mock.patch.object(watch, "push", side_effect=OSError("ntfy down")):
-            watch.poll(db, {"zip": "10001", "watch": [W]})
+            watch.poll(db, {"watch": [W]})
             self.assertEqual(search.call_count, 5)
             watch._last_polled.clear()
-            watch.poll(db, {"zip": "10001", "watch": [W]})
+            watch.poll(db, {"watch": [W]})
             self.assertEqual(search.call_count, 6)
 
     def test_failed_push_leaves_the_deal_for_next_poll(self) -> None:
         db = new_db()
         seed(db, lambda d: 300)
-        config = {"zip": "10001", "watch": [W]}
+        config = {"watch": [W]}
         with mock.patch.object(watch.time, "time", return_value=NOW), mock.patch.object(watch, "search", return_value=[item("new", 250)]), mock.patch.object(watch, "push") as push:
             push.side_effect = OSError("ntfy down")
             self.assertEqual(len(watch.poll(db, config)), 1)

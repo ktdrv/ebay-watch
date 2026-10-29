@@ -91,7 +91,7 @@ _failing: dict[str, dict] = {}
 def env(name: str) -> str:
     value = os.environ.get(name)
     if not value:
-        raise RuntimeError(f"{name} is not set (see ebay-watch/.env)")
+        raise RuntimeError(f"{name} is not set (see .env.example)")
     return value
 
 
@@ -108,7 +108,7 @@ def ebay_token() -> str:
     return _token["value"]
 
 
-def search(watch: dict, zip_code: str, offset: int = 0) -> list[dict]:
+def search(watch: dict, offset: int = 0) -> list[dict]:
     """200 listings matching the watch, newest first, skipping `offset`."""
     filters = ["buyingOptions:{" + "|".join(watch.get("buying_options", ["FIXED_PRICE"])) + "}", "deliveryCountry:US"]
     # Delivered price leaves out import duties, so an overseas listing is
@@ -122,15 +122,15 @@ def search(watch: dict, zip_code: str, offset: int = 0) -> list[dict]:
     params = {"q": watch["query"], "sort": "newlyListed", "limit": 200, "offset": offset, "filter": ",".join(filters)}
     if "category_ids" in watch:
         params["category_ids"] = ",".join(map(str, watch["category_ids"]))
-    req = urllib.request.Request(f"{EBAY}/buy/browse/v1/item_summary/search?{urllib.parse.urlencode(params)}", headers=ebay_headers(zip_code))
+    req = urllib.request.Request(f"{EBAY}/buy/browse/v1/item_summary/search?{urllib.parse.urlencode(params)}", headers=ebay_headers())
     with urllib.request.urlopen(req, timeout=30) as resp:
         return json.load(resp).get("itemSummaries", [])
 
 
-def shipping_quote(item_id: str, zip_code: str) -> float | None:
-    """Cheapest shipping to zip_code from the single-listing lookup, which,
+def shipping_quote(item_id: str) -> float | None:
+    """Cheapest shipping to $ZIP from the single-listing lookup, which,
     unlike search, prices calculated shipping. None if eBay quotes none."""
-    req = urllib.request.Request(f"{EBAY}/buy/browse/v1/item/{urllib.parse.quote(item_id)}", headers=ebay_headers(zip_code))
+    req = urllib.request.Request(f"{EBAY}/buy/browse/v1/item/{urllib.parse.quote(item_id)}", headers=ebay_headers())
     try:
         with urllib.request.urlopen(req, timeout=30) as resp:
             options = json.load(resp).get("shippingOptions", [])
@@ -142,13 +142,13 @@ def shipping_quote(item_id: str, zip_code: str) -> float | None:
     return min(costs) if costs else None
 
 
-def ebay_headers(zip_code: str) -> dict:
+def ebay_headers() -> dict:
     return {
         "Authorization": f"Bearer {ebay_token()}",
         "X-EBAY-C-MARKETPLACE-ID": "EBAY_US",
-        # Shipping is quoted to this location. Search still leaves calculated
+        # Shipping is quoted to $ZIP. Search still leaves calculated
         # shipping unpriced; the single-listing lookup prices it.
-        "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country%3DUS%2Czip%3D{zip_code}",
+        "X-EBAY-C-ENDUSERCTX": f"contextualLocation=country%3DUS%2Czip%3D{env('ZIP')}",
     }
 
 
@@ -256,7 +256,7 @@ def readiness(watch: dict) -> tuple[int, int]:
     return watch.get("min_listings", 15), max(2, watch.get("min_days", 7))
 
 
-def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zip_code: str = "") -> tuple[list[dict], dict | None]:
+def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float) -> tuple[list[dict], dict | None]:
     """Record this poll's listings, uncommitted, and return (deals among the new ones, baseline).
 
     baseline is set only on a watch's first poll, which seeds the history with
@@ -314,7 +314,7 @@ def check(db: sqlite3.Connection, watch: dict, items: list[dict], now: float, zi
         # stays at a few API calls a day.
         if d is None and t >= cutoff and any(o.get("shippingCostType") == "CALCULATED" for o in item.get("shippingOptions", [])):
             try:
-                cost = shipping_quote(item["itemId"], zip_code)
+                cost = shipping_quote(item["itemId"])
             except Exception:
                 # Never fail the poll over one lookup: the rollback would throw
                 # away this poll's other lookups and redo them every minute,
@@ -410,14 +410,14 @@ def poll(db: sqlite3.Connection, config: dict) -> list[str] | None:
         _last_polled[watch["name"]] = now
         polled = True
         try:
-            items = search(watch, str(config["zip"]))
+            items = search(watch)
             if db.execute("SELECT 1 FROM seeded WHERE watch = ?", (watch["name"],)).fetchone() is None:
                 # New watch: page back through what's already listed to seed
                 # its history. A full page means there may be more.
                 since = time.time() - watch.get("history_days", 30) * DAY
                 while items and len(items) < SEED_LIMIT and len(items) % 200 == 0 and listed_at(items[-1], 0) >= since:
-                    items += search(watch, str(config["zip"]), len(items))
-            deals, baseline = check(db, watch, items, time.time(), str(config["zip"]))
+                    items += search(watch, len(items))
+            deals, baseline = check(db, watch, items, time.time())
             if baseline:
                 # Commit the seed before announcing it. A first poll has no
                 # deals to lose, and if a failed push rolled it back, the next

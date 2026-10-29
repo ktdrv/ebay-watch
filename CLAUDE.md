@@ -2,7 +2,7 @@
 
 Polls eBay for new listings of the one item you want to buy and pushes the real deals to ntfy. Standard library only. Code: `watch.py` (poller, statistics, ntfy pushes), `dashboard.py` (dashboard served on :8091), `watches.toml` (the watches, re-read every poll), `test_watch.py` (`uv run --no-project python -m unittest test_watch.py`; it also checks the title regexes in `watches.toml`), `backtest.py` (replays a copy of the database to check the alert odds against what happened).
 
-Split out of the deployment repo on 2026-10-28 with full history. The homelab keeps only the deployment: `ebay-watch/compose.yaml` and `ebay-watch/.env` (eBay and ntfy keys). `task deploy-ebay-watch` in the homelab repo copies this tree, `watches.toml` included, to the Docker host and restarts the container. So editing a watch means editing it here, then deploying from the homelab. The dashboard sits behind the homelab's LAN-only `ebay.example.com` and has no login, so keep it off the public internet.
+Configuration is environment variables (see `.env.example`; the shipping ZIP is one) plus `watches.toml`. The dashboard has no login, so keep it off the public internet. This repo is public: deployment details and anything personal (ZIP, hostnames, addresses) stay out of tracked files and commit messages, in the gitignored `CLAUDE.local.md`.
 
 ## Current task: deal confidence
 
@@ -16,7 +16,7 @@ In other words: **minimise buyer's regret**. An alert should mean "you're unlike
 
 **Explicitly not the goal: time-to-sell.** The owner rejected it as a headline feature. A great deal gets bought on the spot anyway, and a bad deal's shelf life doesn't matter. Time-to-sell is useful only internally (see "attainable" below).
 
-The owner thinks the "is it actually cheap" logic is the differentiator, and may open-source it. That's not decided.
+The owner thinks the "is it actually cheap" logic is the differentiator, and published it as open source on 2026-10-29.
 
 ## How it decides today
 
@@ -85,13 +85,9 @@ Live-seen data is thin: 21 days for the 4070 Ti Super, 13 for the 9070 XT and 50
 - Several of the "cheaper ones" were not comparable: Dell and HP OEM pulls (the cheapest 4070 Ti Super was an HP OEM card at $661), and on the 3090 "NVLink bridge" listings priced like cards. The owner counts OEM pulls as the same card; the bridges are an exclude-list miss on a retired watch.
 - With the 3% margin (the run above was by any dollar), alerts on the replayed data: one-day odds predicted 23%, actual 14%; week 52% vs 67% on only 3 alerts.
 
-Rerun: copy the database off the box (a `sqlite3` backup through `docker exec`; the box has no sqlite3 CLI), then `uv run --no-project python backtest.py listings.db`.
+Rerun on a copy of the live database: `uv run --no-project python backtest.py listings.db`.
 
 ## Not built
 
 - **Baseline from sold listings** (one item lookup per listing after it disappears). The sold-signal experiment above showed better statistics on the same asks add little; revisit only if the odds prove badly calibrated with more data.
 - **Like-for-like comparisons** beyond the exclude list: condition buckets, maybe a Haiku tagger for listings that aren't the item at all (accessories, box only); seller signals for "too good to be true". OEM pulls count as the same item (owner's ruling), so they are not filtered.
-
-## Open questions for the owner
-
-- Whether to open-source it. It now has its own repo, but publishing is undecided. `watches.toml` holds the home ZIP code, and the history mentions LAN addresses.

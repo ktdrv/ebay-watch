@@ -1,6 +1,6 @@
-# eBay watches. Re-read every 30 seconds, so `task deploy -- ebay-watch` is all
-# an edit needs. Each check is one API call, plus one per new listing with
-# calculated shipping, and the default Browse API quota is 5,000 calls a day.
+# eBay watches. Re-read every 30 seconds, so an edit needs no restart. Each
+# check is one API call, plus one per new listing with calculated shipping,
+# and the default Browse API quota is 5,000 calls a day.
 # The sum of 1440 / interval_minutes over all watches must stay well under it:
 # here 3 x 720 (every 2 min) = 2,160, leaving room for shipping lookups and a
 # new watch's first-check seeding (~5 calls). Past the quota, every check
@@ -8,8 +8,6 @@
 
 # Default check interval; a watch's own interval_minutes overrides it.
 interval_minutes = 2
-# Shipping is quoted to this ZIP.
-zip = "10001"
 
 # A new listing alerts when its delivered price (item + cheapest shipping) is
 # max_z or more spreads under the LOWER of
