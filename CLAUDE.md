@@ -28,7 +28,7 @@ The owner thinks the "is it actually cheap" logic is the differentiator, and pub
 
 Listings are filtered first by title regex, an exclude list, condition "for parts", multi-variation listings and non-USD prices. Only listings located in the US count.
 
-Active watches: RTX 4070 Ti Super, RX 9070 XT, RTX 5070 Ti, every 2 min (watch the quota sum in `watches.toml`). The database on the box (`/data/listings.db` in the `ebay-watch` container) also holds history for retired watches (RTX 3090, RX 6900 XT, RX 7900 GRE/XT, RX 9070), about 950 listings in total.
+Active watches: RTX 4070 Ti Super, RX 9070 XT, every minute (watch the quota sum in `watches.toml`). The database on the box (`/data/listings.db` in the `ebay-watch` container) also holds history for retired watches (RTX 5070 Ti, RTX 3090, RX 6900 XT, RX 7900 GRE/XT, RX 9070), about 950 listings in total.
 
 ## Finding: eBay already tells us what sold
 

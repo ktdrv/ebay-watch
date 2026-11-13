@@ -299,7 +299,6 @@ class CheckTest(unittest.TestCase):
         cases = {
             "RTX 4070 Ti Super": (["ASUS TUF RTX 4070 Ti SUPER 16GB", "Gigabyte 4070TI Super Gaming OC", "RTX 4070 Ti-Super", "MSI RTX 4070 16GB Ventus", "RTX 4070Ti 16G", "Gigabyte RTX 4070 Ti Gaming OC 16GB GDDR6X"], ["MSI RTX 4070 SUPER 12GB", "Zotac RTX 4070 Ti 12GB", "RTX 4070 12GB", "RTX 4060 Ti 16GB", "4070 SUPER - RYZEN 9 7945HX BD790i Minisforum 16GB DDR5, 512GB Storage"]),
             "RX 9070 XT": (["PowerColor Reaper Radeon RX 9070 XT 16GB", "XFX Quicksilver AMD RX 9070XT White"], ["ASUS PRIME Radeon RX 9070 16GB GDDR6"]),
-            "RTX 5070 Ti": (["ASUS TUF RTX 5070 Ti 16GB", "MSI RTX 5070TI Ventus"], ["MSI RTX 5070 12GB", "Zotac RTX 5070 Twin Edge"]),
         }
         for name, (yes, no) in cases.items():
             for t in yes:

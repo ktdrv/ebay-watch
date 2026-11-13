@@ -2,12 +2,12 @@
 # check is one API call, plus one per new listing with calculated shipping,
 # and the default Browse API quota is 5,000 calls a day.
 # The sum of 1440 / interval_minutes over all watches must stay well under it:
-# here 3 x 720 (every 2 min) = 2,160, leaving room for shipping lookups and a
+# here 2 x 1,440 (every minute) = 2,880, leaving room for shipping lookups and a
 # new watch's first-check seeding (~5 calls). Past the quota, every check
 # fails until midnight Pacific.
 
 # Default check interval; a watch's own interval_minutes overrides it.
-interval_minutes = 2
+interval_minutes = 1
 
 # A new listing alerts when its delivered price (item + cheapest shipping) is
 # max_z or more spreads under the LOWER of
@@ -69,7 +69,7 @@ interval_minutes = 2
 
 # One watch per GPU model, all in eBay's Graphics/Video Cards category (27386),
 # which keeps out whole PCs. Each title pattern keeps the near-namesakes out:
-# 4070 Super / 4070 Ti, 9070 / 9070 GRE, 5070.
+# 4070 Super / 4070 Ti, 9070 / 9070 GRE.
 # condition_ids is everything but sealed new (1000): new stock is a separate,
 # pricier market (on 2026-10-07 a 3090 was ~$2,456 new vs ~$1,638 used,
 # delivered) that would wreck the statistics. 1500 is eBay's "New other",
@@ -100,13 +100,4 @@ match = '9070\s*-?xt'
 category_ids = [27386]
 condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
 min_price = 400
-exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
-
-[[watch]]
-name = "RTX 5070 Ti"
-query = "rtx 5070 ti"
-match = '5070\s*-?ti'
-category_ids = [27386]
-condition_ids = [1500, 2010, 2020, 2030, 2500, 2750, 3000, 4000, 5000, 6000]
-min_price = 500
 exclude = ["for parts", "parts only", "not working", "broken", "as is", "as-is", "no display", "artifact", "untested", "read desc", "box only", "cooler", "heatsink", "backplate", "water block", "waterblock", "shroud", "bracket", "fan only"]
